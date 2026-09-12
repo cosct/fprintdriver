@@ -1,0 +1,22 @@
+# 大体积本地内容（不随研究仓库发布）
+# 驱动本体在独立仓库：https://github.com/cosct/libfprint-egis0575
+libfprint/
+refs/
+acerdrv/
+
+# 指纹数据（生物特征，绝不发布）
+datasets/
+test-storage.variant
+
+# makepkg 工作目录与产物
+src/
+pkg/
+*.pkg.tar.zst
+*.zip
+
+# 工具与缓存
+.claude/
+.mimosa/
+__pycache__/
+tools/egis0575-matcher-test
+tools/eval_bz3
