@@ -6,11 +6,15 @@ USB 1c7a:0575)** swipe/capacitive-press fingerprint sensor found in several
 Acer/Wortmann machines.
 
 - Driver branch: **`egis0575`** (default branch here); `master` tracks upstream untouched.
-- Architecture: press-snapshot (103×52 frames, host-side matching), ported from
-  the EH577 driver with the EH575 register/protocol tables and a Windows-engine
-  NCC matcher port. See `libfprint/drivers/egis0575.c` header comment for details
-  and the [fprintdriver research repo](https://github.com/cosct/fprintdriver)
-  for the full protocol analysis (reverse-engineered from the vendor Windows driver).
+- Architecture: press-snapshot capture (103×52 frames, warm-background
+  subtraction, quality gate) ported from the EH577 driver, with topni1's
+  calibration init (required on EH575) and a host-side matcher ported from
+  the vendor Windows engine (11-orientation ridge matched-filter bank,
+  512-bit descriptors, Hamming/RANSAC scoring; coefficients extracted from
+  EgisTouchFPEngine0575.dll). See `libfprint/drivers/egis0575.c` header
+  comment for details and the
+  [fprintdriver research repo](https://github.com/cosct/fprintdriver)
+  for the full protocol analysis and matcher validation.
 - Status: works for KDE lock-screen / `fprintd` unlock on the developer's
   machine; tuning thresholds and feedback from other EH575 owners welcome
   (open a GitHub issue).

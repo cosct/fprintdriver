@@ -23,15 +23,16 @@
 
 /*
  * EH575 press-snapshot driver:
- * - PRE_INIT/POST_INIT polling loop with per-claim frame-read budget
+ * - calibration init (read → reset → upload; required for imaging on EH575)
+ *   with PRE_INIT/POST_INIT kept as the error-retry path
+ * - per-claim frame-read budget with release/re-claim + calibration re-upload
  * - warm-background subtraction, per-touch turn state machine
  * - median denoise + stretch5 + NBIS-based Stage-2 quality gate
- * - NCC gallery matcher (enroll N frames, verify peak-NCC >= threshold)
- * - active width runtime-configurable (EGIS0575_ACTIVE_WIDTH env) until the
- *   EH575 dead-column question is settled (docs/comparison.md §6)
- * - topni1's calibration upload flow is NOT ported yet; if EH575 startup
- *   proves unreliable without it, port setup/init SSMs from
- *   refs/topni1-libfprint/libfprint/drivers/egis0575.c
+ * - Windows-engine matcher port (11-orientation ridge matched-filter bank,
+ *   512-bit descriptors, Hamming/RANSAC scoring — egis0575-matcher.c);
+ *   full-width 103-column frames (EH575 has no dead columns)
+ * - EGIS0575_ACTIVE_WIDTH / EGIS0575_SKIP_CALIBRATION env knobs kept for
+ *   A/B experiments
  */
 
 #define FP_COMPONENT "egis0575"
