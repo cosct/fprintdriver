@@ -6,8 +6,9 @@
 
 ## 发布状态（2026-09-13）
 
-- **驱动已可用**：press 单帧 + NCC 匹配，真机（KDE 锁屏 / fprintd / Bitwarden
-  polkit 解锁）验证通过
+- **驱动已可用**：press 采集架构 + Windows 引擎 matcher 移植，真机
+  （KDE 锁屏 / fprintd / Bitwarden polkit 解锁）验证通过；匹配器验证
+  数字见 `docs/comparison.md` §6（离线 FRR/FAR 双 0%，真机阈值余量 ≥20）
 - **驱动代码**：[cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)
   （upstream libfprint + `egis0575` 驱动，分支 `egis0575`，LGPL-2.1+）
 - **Arch 用户**：AUR 包 `libfprint-egis0575`（`yay -S libfprint-egis0575`）
@@ -51,7 +52,7 @@ python3 scripts/analyze-columns.py datasets/press-test-*/
 ```
 
 驱动可调环境变量：
-- `EGIS0575_ACTIVE_WIDTH` — 有效列数（默认 103，死区验证后改）
+- `EGIS0575_ACTIVE_WIDTH` — 有效列数（默认 103；已定案无死区，仅供实验）
 - `EGIS0575_SKIP_CALIBRATION=1` — 跳过校准上传走 EH577 式初始化（已知会全零帧，仅 A/B 用）
 - `EGIS0575_PGM_DEBUG_DIR` / `_LOG` / `_INTERVAL_MS` — PGM 数据集采集
 - `EGIS0575_FRAME_DUMP_DIR` — 原始 5356 字节帧转储
