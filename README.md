@@ -1,4 +1,24 @@
+# libfprint-egis0575
 
+This repository is upstream [libfprint](https://gitlab.freedesktop.org/libfprint/libfprint)
+plus **`egis0575`**, an experimental driver for the **EgisTec EH575 (LighTuning,
+USB 1c7a:0575)** swipe/capacitive-press fingerprint sensor found in several
+Acer/Wortmann machines.
+
+- Driver branch: **`egis0575`** (default branch here); `master` tracks upstream untouched.
+- Architecture: press-snapshot (103×52 frames, host-side matching), ported from
+  the EH577 driver with the EH575 register/protocol tables and a Windows-engine
+  NCC matcher port. See `libfprint/drivers/egis0575.c` header comment for details
+  and the [fprintdriver research repo](https://github.com/cosct/fprintdriver)
+  for the full protocol analysis (reverse-engineered from the vendor Windows driver).
+- Status: works for KDE lock-screen / `fprintd` unlock on the developer's
+  machine; tuning thresholds and feedback from other EH575 owners welcome
+  (open a GitHub issue).
+- Arch Linux users: install **`libfprint-egis0575`** from the AUR.
+- License: LGPL-2.1-or-later, same as upstream. Contributions upstream are
+  the long-term goal.
+
+---
 
 <div align="center">
 

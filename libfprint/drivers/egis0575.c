@@ -1,0 +1,2679 @@
+/*
+ * Egis Technology Inc. (aka. LighTuning) 0575 driver for libfprint
+ * Press-snapshot architecture ported from the EH577 driver
+ * (championswimmer/libfprint-eh577, commit b19955e, LGPL-2.1+):
+ * Copyright (C) 2021 Animesh Sahu <animeshsahu19@yahoo.com>
+ * Copyright (C) 2026 Arnav Gupta <dev@championswimmer.in>
+ * EH575 adaptation for the fprintdriver research tree.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
+
+/*
+ * EH575 press-snapshot driver:
+ * - PRE_INIT/POST_INIT polling loop with per-claim frame-read budget
+ * - warm-background subtraction, per-touch turn state machine
+ * - median denoise + stretch5 + NBIS-based Stage-2 quality gate
+ * - NCC gallery matcher (enroll N frames, verify peak-NCC >= threshold)
+ * - active width runtime-configurable (EGIS0575_ACTIVE_WIDTH env) until the
+ *   EH575 dead-column question is settled (docs/comparison.md §6)
+ * - topni1's calibration upload flow is NOT ported yet; if EH575 startup
+ *   proves unreliable without it, port setup/init SSMs from
+ *   refs/topni1-libfprint/libfprint/drivers/egis0575.c
+ */
+
+#define FP_COMPONENT "egis0575"
+
+#include <math.h>
+#include <stdio.h>
+#include <nbis.h>
+
+#include "egis0575.h"
+#include "egis0575-matcher.h"
+#include "drivers_api.h"
+
+/*
+ * ==================== Basic definitions ====================
+ */
+
+#define NCC_ENROLL_FRAMES 12     /* enrollment presses = gallery frames */
+
+/* Struct to share data across lifecycle */
+struct _FpDeviceEgis0575
+{
+  FpDevice      parent;
+
+  gboolean      running;
+  gboolean      stop;
+  gboolean      finger_reported;
+  gboolean      capture_armed;
+  gboolean      waiting_for_lift; /* set on turn timeout or accepted frame; cleared on lift */
+
+  guint         pgm_debug_counter;
+  gint64        pgm_debug_last_capture_time;
+
+  guint8       *capture_frame;
+
+  guint8       *background;
+  guint         background_warmup_remaining; /* idle frames still to grab as baseline */
+
+  const Packet *pkt_array;
+  int           pkt_array_len;
+  int           current_index;
+  guint         frame_counter;
+  guint         frame_reads_this_claim;
+  gboolean      has_pre_init_run;
+
+  guint8       *calibration;       /* 5356-byte block cached for this open session */
+  gboolean      cal_skip;          /* EGIS0575_SKIP_CALIBRATION=1: EH577-style, no cal */
+  const Packet *cal_pkt_array;     /* child-SSM packet array being run */
+  int           cal_pkt_len;
+  int           cal_pkt_index;
+  guint         cal_poll_iters;    /* bounded retry counter for status polls */
+
+  gint64        finger_first_detected_time;
+  gboolean      turn_open;
+
+  gint64        waiting_for_lift_since; /* phantom-presence watchdog anchor */
+
+  guint         active_width;      /* responsive columns of the 103-col frame */
+  guint         padded_img_width;  /* active_width rounded up to a multiple of 4 */
+
+  GPtrArray    *verify_probes;     /* Egis0575MFeatureSet* per collected probe */
+  Egis0575MFeatureSet *verify_gallery;  /* unpacked enrolled feature frames */
+  guint         verify_gallery_n;
+
+  Egis0575MFeatureSet *enroll_feats;    /* heap: 12 sets exceed the GObject instance limit */
+  guint         enroll_stage;
+
+  guint         startup_timeout_retries;
+
+  gint64        last_full_init_time;  /* sensor-health watchdog anchors */
+  gint64        weak_press_window_start;
+  guint         weak_press_events;
+
+  gboolean      close_pending;      /* close deferred until capture loop stops */
+  FpiSsm       *capture_ssm;        /* for the cancel watchdog */
+  gboolean      cancel_watchdog_armed;
+};
+
+enum sm_states {
+  SM_CAL_START,
+  SM_CAL_PHASE_1,
+  SM_CAL_POLL_2_REQ,
+  SM_CAL_POLL_2_RESP,
+  SM_CAL_PHASE_3,
+  SM_CAL_POLL_4_REQ,
+  SM_CAL_POLL_4_RESP,
+  SM_CAL_PHASE_5,
+  SM_CAL_READ_REQ,
+  SM_CAL_READ_RESP,
+  SM_CAL_CHECK,
+  SM_PRE_RESET,
+  SM_RESET_POLL_REQ,
+  SM_RESET_POLL_RESP,
+  SM_POST_RESET,
+  SM_CAL_ENTER_REQ,
+  SM_CAL_WRITE,
+  SM_CAL_ACK,
+  SM_INIT,
+  SM_START,
+  SM_REQ,
+  SM_RESP,
+  SM_DONE,
+  SM_SHUTDOWN,
+  SM_FINISH,
+  SM_STATES_NUM
+};
+
+/* Child state machine that walks a static Packet array (calibration phases). */
+enum packet_ssm_states {
+  PACKET_SSM_REQ,
+  PACKET_SSM_RESP,
+  PACKET_SSM_LOOP,
+  PACKET_SSM_DONE,
+};
+
+G_DECLARE_FINAL_TYPE (FpDeviceEgis0575, fpi_device_egis0575, FPI, DEVICE_EGIS0575, FpDevice);
+G_DEFINE_TYPE (FpDeviceEgis0575, fpi_device_egis0575, FP_TYPE_DEVICE);
+
+/* Multi-frame verify: collect up to this many quality-gated frames within one
+ * touch turn and match the best one. */
+#define EGIS0575_VERIFY_PROBE_FRAMES 6
+
+/* Idle duty cycling: the HW finger-status command (60 01) does not react
+ * to presses on this sensor (measured: 1199 polls, constant 0x01), so idle
+ * detection stays frame-based — but at a relaxed cadence. Continuous
+ * full-rate capture (17ms cycle) cooks the sensor insensitive within
+ * minutes; one capture per ~250ms (~7% duty) keeps sessions sustainable
+ * with a quarter-second press latency. */
+#define EGIS0575_IDLE_FRAME_DELAY_MS 230
+
+/* Sensor-health watchdog. Long continuous polling sessions degrade the
+ * sensor into a semi-deaf state: real presses show coverage 2-5% instead
+ * of 20-80% (raw_finger_pixels drops from the 5356 idle baseline into the
+ * 5200s). Two defenses:
+ *  - prophylactic: full re-init (incl. the 97 00 00 sensor reset inside
+ *    the calibration chain) after this much continuous uptime;
+ *  - reactive: this many weak-press frames inside the window means the
+ *    sensor hears presses but cannot see them -> recover now. */
+#define EGIS0575_IDLE_REINIT_MS 600000
+#define EGIS0575_WEAK_PRESS_EVENTS 20
+#define EGIS0575_WEAK_PRESS_WINDOW_MS 8000
+
+static gboolean sensor_health_watchdog (FpDeviceEgis0575 *self, FpiUsbTransfer *transfer,
+                                        FpiSsm *ssm, FpDevice *dev);
+static void calculate_finger_heuristics (FpDeviceEgis0575 *self, FpiUsbTransfer *transfer,
+                                         int *out_coverage, int *out_intensity);
+static gsize count_finger_pixels_raw (FpiUsbTransfer *transfer);
+static gboolean recycle_interface_claim (FpDevice *dev, const char *reason, GError **error);
+static void cancel_watchdog_cb (FpDevice *dev, gpointer user_data);
+
+/* Watchdog check + full recovery path. Called from the idle (no-finger)
+ * branch of save_img with the raw frame available. */
+static gboolean
+sensor_health_watchdog (FpDeviceEgis0575 *self, FpiUsbTransfer *transfer, FpiSsm *ssm, FpDevice *dev)
+{
+  gint64 now = g_get_monotonic_time ();
+  int coverage = 0, intensity = 0;
+  gboolean need_reinit = FALSE;
+
+  if (now - self->last_full_init_time > EGIS0575_IDLE_REINIT_MS * 1000)
+    {
+      fp_warn ("Sensor-health watchdog: >%d s uptime; prophylactic full re-init",
+               EGIS0575_IDLE_REINIT_MS / 1000);
+      need_reinit = TRUE;
+    }
+
+  calculate_finger_heuristics (self, transfer, &coverage, &intensity);
+  if (coverage >= 1 && coverage < EGIS0575_PRESENCE_MIN_COVERAGE_PCT &&
+      count_finger_pixels_raw (transfer) < 5300)
+    {
+      if (self->weak_press_window_start == 0 ||
+          now - self->weak_press_window_start > EGIS0575_WEAK_PRESS_WINDOW_MS * 1000)
+        {
+          self->weak_press_window_start = now;
+          self->weak_press_events = 0;
+        }
+      self->weak_press_events++;
+      if (self->weak_press_events >= EGIS0575_WEAK_PRESS_EVENTS)
+        {
+          fp_warn ("Sensor-health watchdog: %u weak-press frames in window; sensor degraded, recovering",
+                   self->weak_press_events);
+          need_reinit = TRUE;
+        }
+    }
+
+  if (!need_reinit)
+    return FALSE;
+
+  self->weak_press_events = 0;
+  self->weak_press_window_start = 0;
+  self->last_full_init_time = now;
+
+  /* Full recovery: recycle the claim, drop the cached calibration (forces
+   * a fresh read + the in-protocol 97 00 00 sensor reset) and re-arm. */
+  {
+    g_autoptr(GError) error = NULL;
+
+    if (!recycle_interface_claim (dev, "sensor-health recovery", &error))
+      {
+        fp_dbg ("Recovery claim recycle failed: %s", error->message);
+        fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+        return TRUE;
+      }
+    g_clear_pointer (&self->calibration, g_free);
+    self->frame_reads_this_claim = 0;
+    fpi_ssm_jump_to_state_delayed (ssm, SM_CAL_START, 250);
+  }
+  return TRUE;
+}
+
+/* Startup: recycle the interface claim up to this many times if the first
+ * pre-init packet times out. If still stuck after that, fail cleanly. */
+#define EGIS0575_STARTUP_TIMEOUT_RECOVERY_MAX        2
+#define EGIS0575_STARTUP_TIMEOUT_RECOVERY_DELAY_MS 250
+#define EGIS0575_STARTUP_SETTLE_DELAY_MS           150
+
+/* Per-touch timing. After a finger first lands we ignore frames for SETTLE_MS
+ * so the press stabilises before evaluation. If no valid frame is captured
+ * within TURN_TIMEOUT_MS the turn fails and the driver waits for a real lift
+ * before arming a new attempt. */
+#define EGIS0575_FINGER_SETTLE_MS                  400
+#define EGIS0575_TURN_TIMEOUT_MS                  1400
+
+/* Startup: grab this many valid (non-zero) idle frames as the warm background
+ * before arming finger detection. Without a baseline, finger_detected compares
+ * against bg=0 and the sensor's hot idle frame reads as a finger, deadlocking
+ * detection. The capture workflow guarantees no finger is present at startup. */
+#define EGIS0575_BACKGROUND_WARMUP_FRAMES            3
+
+/* Background refresh gate: idle frames have a narrow pixel spread (std < 10,
+ * measured max 9.9) while finger frames are strongly structured (std >= 10.1,
+ * p50 ~42). Only flat frames may refresh the warm background, so a light real
+ * touch never corrupts the baseline. This replaces the EH577 raw-finger-pixel
+ * gate which never fires on EH575 (idle frames are full-frame low-intensity),
+ * leaving the background frozen until AGC drift makes idle frames read as a
+ * permanently present finger. */
+#define EGIS0575_BG_UPDATE_MAX_STD                10.0
+
+/* If a "finger" stays detected this long after an accepted frame, it is
+ * drift/corrupt-baseline, not a finger: refresh the baseline and re-arm. */
+#define EGIS0575_PHANTOM_LIFT_TIMEOUT_MS          4000
+
+/* Bounded retries for the calibration status polls (60 2d / 60 35 / 60 00);
+ * topni1 polled unbounded, but a wedged sensor must fail cleanly. */
+#define EGIS0575_CAL_POLL_MAX_ITERS                500
+
+static const char *
+packet_array_name (const Packet *pkt_array)
+{
+  if (pkt_array == EGIS0575_POST_CALIBRATION_PACKETS)
+    return "post-cal";
+  if (pkt_array == EGIS0575_POST_INIT_PACKETS)
+    return "post-init";
+  if (pkt_array == EGIS0575_PRE_INIT_PACKETS)
+    return "pre-init";
+
+  return "unknown";
+}
+
+static void
+report_finger_status (FpDeviceEgis0575 *self,
+                      gboolean          present,
+                      const char       *reason)
+{
+  if (self->finger_reported != present)
+    fp_dbg ("Reporting finger %s (%s)", present ? "present" : "absent", reason);
+  else
+    fp_dbg ("Finger remains %s (%s)", present ? "present" : "absent", reason);
+
+  self->finger_reported = present;
+  fpi_device_report_finger_status_changes (FP_DEVICE (self),
+                                           present ? FP_FINGER_STATUS_PRESENT : FP_FINGER_STATUS_NONE,
+                                           present ? FP_FINGER_STATUS_NONE : FP_FINGER_STATUS_PRESENT);
+}
+
+/* Feature-template serialization: gallery = aa(qqay) (frames of features:
+ * x, y, orientation index, 64-byte descriptor). */
+static GVariant *
+pack_feature_frames (const Egis0575MFeatureSet *sets, guint n_sets)
+{
+  GVariantBuilder outer;
+
+  g_variant_builder_init (&outer, G_VARIANT_TYPE ("aa(qqay)"));
+  for (guint s = 0; s < n_sets; s++)
+    {
+      g_variant_builder_open (&outer, G_VARIANT_TYPE ("a(qqay)"));
+      for (int i = 0; i < sets[s].n; i++)
+        {
+          const Egis0575MFeature *f = &sets[s].f[i];
+
+          g_variant_builder_add (&outer, "(qq@ay)",
+                                 f->x, f->y,
+                                 g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
+                                                            f->desc,
+                                                            EGIS0575_M_DESC_BYTES,
+                                                            1));
+        }
+      g_variant_builder_close (&outer);
+    }
+
+  return g_variant_builder_end (&outer);
+}
+
+static gboolean
+unpack_feature_frames (GVariant             *data,
+                       Egis0575MFeatureSet **out_sets,
+                       guint                *out_n)
+{
+  Egis0575MFeatureSet *sets;
+  GVariant *frames;
+  guint n_frames, fi;
+
+  if (!g_variant_is_of_type (data, G_VARIANT_TYPE ("aa(qqay)")))
+    return FALSE;
+
+  frames = data;
+  n_frames = (guint) g_variant_n_children (frames);
+  if (n_frames == 0 || n_frames > 64)
+    return FALSE;
+
+  sets = g_new0 (Egis0575MFeatureSet, n_frames);
+
+  for (fi = 0; fi < n_frames; fi++)
+    {
+      GVariant *frame = g_variant_get_child_value (frames, fi);
+      guint nf = (guint) g_variant_n_children (frame);
+      guint k;
+
+      for (k = 0; k < nf && k < EGIS0575_M_MAX_FEATURES; k++)
+        {
+          GVariant *feat = g_variant_get_child_value (frame, k);
+          GVariant *desc;
+          Egis0575MFeature *f = &sets[fi].f[k];
+          gsize len = 0;
+          const void *raw;
+
+          g_variant_get (feat, "(qq@ay)", &f->x, &f->y, &desc);
+          raw = g_variant_get_fixed_array (desc, &len, 1);
+          if (len != EGIS0575_M_DESC_BYTES)
+            {
+              g_variant_unref (desc);
+              g_variant_unref (feat);
+              g_variant_unref (frame);
+              g_free (sets);
+              return FALSE;
+            }
+          memcpy (f->desc, raw, EGIS0575_M_DESC_BYTES);
+          g_variant_unref (desc);
+          g_variant_unref (feat);
+          sets[fi].n++;
+        }
+      g_variant_unref (frame);
+    }
+
+  *out_sets = sets;
+  *out_n = n_frames;
+  return TRUE;
+}
+
+/* Verify verdict (docs/windows-engine-tables.md): a probe matches when its
+ * best gallery score clears the threshold AND at least two gallery frames
+ * agree above the agree floor. */
+static gboolean
+probe_matches_gallery (const Egis0575MFeatureSet *probe,
+                       const Egis0575MFeatureSet *gallery,
+                       guint                     gallery_n,
+                       int                      *best_out)
+{
+  int best = 0;
+  guint agree = 0;
+
+  for (guint g = 0; g < gallery_n; g++)
+    {
+      int s = egis0575_m_score (probe, &gallery[g], NULL);
+
+      if (s > best)
+        best = s;
+      if (s >= EGIS0575_M_AGREE_SCORE)
+        agree++;
+    }
+
+  if (best_out)
+    *best_out = best;
+  return best >= EGIS0575_M_MATCH_THRESHOLD && agree >= EGIS0575_M_AGREE_FRAMES;
+}
+
+static void
+clear_capture_frame (FpDeviceEgis0575 *self)
+{
+  g_clear_pointer (&self->capture_frame, g_free);
+}
+
+static void
+clear_background (FpDeviceEgis0575 *self)
+{
+  g_clear_pointer (&self->background, g_free);
+}
+
+/*
+ * Keep a rolling copy of the most recent *warm* no-finger frame as the background.
+ *
+ * The sensor's fixed hot/saturated pixels (and fixed-pattern offset) are present in
+ * the no-finger frames too, so subtracting the latest one in save_img cancels
+ * that fixed-pattern noise without eroding ridge detail. The baseline must be a warm
+ * frame that actually carries the hot pixels: a cold all-zero frame has bg=0 at those
+ * locations and would fail to subtract them, so only frames that reach this helper
+ * (non-zero, no-finger) update it, and they update it every time so the baseline
+ * reflects the sensor state right before the finger lands.
+ */
+static void
+update_warm_background (FpDeviceEgis0575 *self, FpiUsbTransfer *transfer)
+{
+  if (transfer->actual_length != EGIS0575_IMGSIZE)
+    return;
+
+  if (!self->background)
+    self->background = g_malloc (EGIS0575_IMGSIZE);
+
+  memcpy (self->background, transfer->buffer, EGIS0575_IMGSIZE);
+}
+
+static gsize
+count_finger_pixels_raw (FpiUsbTransfer *transfer)
+{
+  gsize count = 0;
+
+  for (gsize i = 0; i < transfer->actual_length; i++)
+    {
+      guint8 val = transfer->buffer[i];
+      if (val > 15 && val < 150)
+        count++;
+    }
+
+  return count;
+}
+
+static gsize
+count_nonzero_bytes (FpiUsbTransfer *transfer)
+{
+  gsize nonzero = 0;
+
+  for (size_t i = 0; i < transfer->actual_length; i++)
+    if (transfer->buffer[i] != 0)
+      nonzero++;
+
+  return nonzero;
+}
+
+/* Population standard deviation of the raw frame: idle frames stay below
+ * EGIS0575_BG_UPDATE_MAX_STD, finger frames are far above (see header). */
+static double
+frame_pixel_std (FpiUsbTransfer *transfer)
+{
+  double sum = 0.0, sq = 0.0;
+  gsize n = transfer->actual_length;
+
+  if (n == 0)
+    return 0.0;
+
+  for (gsize i = 0; i < n; i++)
+    {
+      double v = transfer->buffer[i];
+      sum += v;
+      sq += v * v;
+    }
+
+  return sqrt (sq / n - (sum / n) * (sum / n));
+}
+
+static void
+maybe_write_live_frame_pgm (FpImage *img)
+{
+  const gchar *path = g_getenv ("EGIS0575_LIVE_FRAME_PATH");
+  gchar header[64];
+  int header_len;
+  gsize data_len;
+  g_autofree gchar *buf = NULL;
+  g_autoptr(GError) error = NULL;
+
+  if (!path || !path[0])
+    return;
+
+  header_len = g_snprintf (header, sizeof (header), "P5 %u %u 255\n", img->width, img->height);
+  data_len = (gsize) img->width * img->height;
+  buf = g_malloc (header_len + data_len);
+  memcpy (buf, header, header_len);
+  memcpy (buf + header_len, img->data, data_len);
+
+  if (!g_file_set_contents (path, buf, (gssize) (header_len + data_len), &error))
+    fp_dbg ("live frame write failed: %s", error->message);
+}
+
+static void
+dump_frame_if_requested (FpDeviceEgis0575 *self,
+                         FpiUsbTransfer    *transfer,
+                         gsize              nonzero)
+{
+  const gchar *dump_dir = g_getenv ("EGIS0575_FRAME_DUMP_DIR");
+  g_autofree gchar *path = NULL;
+  g_autofree gchar *base = NULL;
+  g_autoptr(GError) error = NULL;
+
+  if (!dump_dir || dump_dir[0] == '\0')
+    return;
+
+  if (transfer->actual_length != EGIS0575_IMGSIZE)
+    return;
+
+  if (g_mkdir_with_parents (dump_dir, 0755) != 0)
+    {
+      fp_warn ("Failed to create EH575 frame dump dir: %s", dump_dir);
+      return;
+    }
+
+  base = g_strdup_printf ("%04u-%s-nonzero-%zu.bin",
+                          self->frame_counter++,
+                          packet_array_name (self->pkt_array),
+                          nonzero);
+  path = g_build_filename (dump_dir, base, NULL);
+
+  if (!g_file_set_contents (path,
+                            (const gchar *) transfer->buffer,
+                            transfer->actual_length,
+                            &error))
+    {
+      fp_warn ("Failed to dump EH575 frame to %s: %s", path, error->message);
+      return;
+    }
+
+  fp_dbg ("Dumped EH575 frame to %s", path);
+}
+
+static gboolean
+write_image_pgm (FpImage     *img,
+                 const gchar *path,
+                 GError     **error)
+{
+  gchar header[64];
+  int header_len;
+  gsize data_len;
+  g_autofree gchar *buf = NULL;
+
+  header_len = g_snprintf (header, sizeof (header), "P5 %u %u 255\n", img->width, img->height);
+  data_len = (gsize) img->width * img->height;
+  buf = g_malloc (header_len + data_len);
+  memcpy (buf, header, header_len);
+  memcpy (buf + header_len, img->data, data_len);
+
+  return g_file_set_contents (path, buf, (gssize) (header_len + data_len), error);
+}
+
+static gboolean
+pgm_debug_enabled (void)
+{
+  const gchar *dir = g_getenv ("EGIS0575_PGM_DEBUG_DIR");
+
+  return dir && dir[0];
+}
+
+static void dump_verify_image (const gchar *kind, guint index, FpImage *img);
+static void close_poll_cb (FpDevice *dev, gpointer user_data);
+static void egis0575_finish_close (FpDevice *dev);
+
+static gboolean
+pgm_debug_control_active (void)
+{
+  const gchar *control_path = g_getenv ("EGIS0575_PGM_DEBUG_CONTROL");
+  g_autofree gchar *contents = NULL;
+  gsize len = 0;
+
+  if (!control_path || !control_path[0])
+    return TRUE;
+
+  if (!g_file_get_contents (control_path, &contents, &len, NULL) || len == 0)
+    return FALSE;
+
+  return contents[0] == '1' || contents[0] == 'f' || contents[0] == 'F' ||
+         g_str_has_prefix (contents, "running");
+}
+
+static guint
+pgm_debug_interval_ms (void)
+{
+  const gchar *value = g_getenv ("EGIS0575_PGM_DEBUG_INTERVAL_MS");
+  gint64 parsed;
+
+  if (!value || !value[0])
+    return 100;
+
+  parsed = g_ascii_strtoll (value, NULL, 10);
+  if (parsed < 1)
+    return 100;
+
+  return (guint) CLAMP (parsed, 1, 10000);
+}
+
+/*
+ * ==================== Data processing ====================
+ */
+
+static gboolean
+valid_data (FpiUsbTransfer *transfer)
+{
+  return count_nonzero_bytes (transfer) > 0;
+}
+
+static void
+calculate_finger_heuristics (FpDeviceEgis0575 *self, FpiUsbTransfer *transfer, int *out_coverage, int *out_intensity)
+{
+  int coverage_pixels = 0;
+  long long intensity_sum = 0;
+
+  for (size_t i = 0; i < transfer->actual_length; i++)
+    {
+      guint8 val = transfer->buffer[i];
+      guint8 bg = self->background ? self->background[i] : 0;
+
+      if (val > bg + 2)
+        val -= bg;
+      else
+        val = 0;
+
+      if (val > 15)
+        {
+          coverage_pixels++;
+          intensity_sum += val;
+        }
+    }
+
+  *out_coverage = (coverage_pixels * 100) / transfer->actual_length;
+  *out_intensity = coverage_pixels > 0 ? (intensity_sum / coverage_pixels) : 0;
+}
+
+static gboolean
+finger_detected (FpDeviceEgis0575 *self, FpiUsbTransfer *transfer)
+{
+  int coverage = 0, intensity = 0;
+  gsize raw_finger_pixels;
+
+  calculate_finger_heuristics (self, transfer, &coverage, &intensity);
+  raw_finger_pixels = count_finger_pixels_raw (transfer);
+
+  fp_dbg ("finger_detected: coverage=%d%% intensity=%d raw_finger_pixels=%zu",
+          coverage, intensity, raw_finger_pixels);
+  return coverage >= EGIS0575_PRESENCE_MIN_COVERAGE_PCT &&
+         intensity >= EGIS0575_PRESENCE_MIN_INTENSITY &&
+         raw_finger_pixels >= EGIS0575_PRESENCE_MIN_RAW_FINGER_PIXELS;
+}
+
+/* Normalize the processed image into the polarity NBIS expects before applying
+ * the Stage-2 quality gate.  The snapshot images are marked COLORS_INVERTED,
+ * so the gate runs on the final resized output geometry that NBIS will
+ * actually see. */
+static void
+normalize_snapshot_image_for_stage2 (FpImage *img)
+{
+  if (!(img->flags & FPI_IMAGE_COLORS_INVERTED))
+    return;
+
+  for (gsize i = 0; i < (gsize) img->width * img->height; i++)
+    img->data[i] = 0xff - img->data[i];
+
+  img->flags &= ~FPI_IMAGE_COLORS_INVERTED;
+}
+
+static guint
+histogram_percentile_value (const guint histogram[256],
+                            guint       total,
+                            guint       pct)
+{
+  guint target;
+  guint cumulative = 0;
+
+  if (total == 0)
+    return 0;
+
+  target = (guint) (((guint64) (total - 1) * pct) / 100);
+
+  for (guint i = 0; i < 256; i++)
+    {
+      cumulative += histogram[i];
+      if (cumulative > target)
+        return i;
+    }
+
+  return 255;
+}
+
+/* Offline testing (EH577) found the ImageMagick-like "stretch5" transform to be
+ * the best visibility/minutiae tradeoff so far: map the 5th..99th percentile
+ * range of the final normalized snapshot into 20..245. This improves ridge
+ * contrast without the heavier local-normalization variants that risk creating
+ * synthetic minutiae. The submitted image is intentionally the enhanced image so
+ * libfprint/NBIS and saved capture PGMs see the same pixels. */
+static void
+enhance_snapshot_image_stretch5 (FpImage *img,
+                                 guint   *out_p5,
+                                 guint   *out_p99)
+{
+  guint histogram[256] = { 0 };
+  guint total = img->width * img->height;
+  guint lo;
+  guint hi;
+  guint in_range;
+  guint out_range = EGIS0575_ENHANCE_STRETCH_OUT_HI - EGIS0575_ENHANCE_STRETCH_OUT_LO;
+
+  if (total == 0)
+    return;
+
+  for (gsize i = 0; i < (gsize) total; i++)
+    histogram[img->data[i]]++;
+
+  lo = histogram_percentile_value (histogram, total, EGIS0575_ENHANCE_STRETCH_LO_PCT);
+  hi = histogram_percentile_value (histogram, total, EGIS0575_ENHANCE_STRETCH_HI_PCT);
+
+  if (out_p5)
+    *out_p5 = lo;
+  if (out_p99)
+    *out_p99 = hi;
+
+  if (hi <= lo)
+    {
+      fp_dbg ("Skipping stretch5 enhancement due to flat histogram (lo=%u hi=%u)", lo, hi);
+      return;
+    }
+
+  if (g_strcmp0 (g_getenv ("EGIS0575_DISABLE_STRETCH"), "1") == 0)
+    {
+      fp_dbg ("Skipping stretch5 enhancement because EGIS0575_DISABLE_STRETCH=1");
+      return;
+    }
+
+  in_range = hi - lo;
+  for (gsize i = 0; i < (gsize) total; i++)
+    {
+      gint v = img->data[i];
+      gint stretched;
+
+      if (v <= (gint) lo)
+        stretched = EGIS0575_ENHANCE_STRETCH_OUT_LO;
+      else if (v >= (gint) hi)
+        stretched = EGIS0575_ENHANCE_STRETCH_OUT_HI;
+      else
+        stretched = EGIS0575_ENHANCE_STRETCH_OUT_LO +
+                    (((v - (gint) lo) * (gint) out_range + (gint) in_range / 2) /
+                     (gint) in_range);
+
+      img->data[i] = (guint8) CLAMP (stretched, 0, 255);
+    }
+
+  fp_dbg ("Applied stretch5 enhancement: p%u=%u p%u=%u -> %u..%u",
+          EGIS0575_ENHANCE_STRETCH_LO_PCT,
+          lo,
+          EGIS0575_ENHANCE_STRETCH_HI_PCT,
+          hi,
+          EGIS0575_ENHANCE_STRETCH_OUT_LO,
+          EGIS0575_ENHANCE_STRETCH_OUT_HI);
+}
+
+static guint8
+median9 (const guint8 *values)
+{
+  guint8 sorted[9];
+
+  memcpy (sorted, values, sizeof (sorted));
+
+  for (guint i = 1; i < G_N_ELEMENTS (sorted); i++)
+    {
+      guint8 v = sorted[i];
+      gint j = (gint) i - 1;
+
+      while (j >= 0 && sorted[j] > v)
+        {
+          sorted[j + 1] = sorted[j];
+          j--;
+        }
+
+      sorted[j + 1] = v;
+    }
+
+  return sorted[4];
+}
+
+/* In-place 3x3 median denoise. The press snapshot carries high-frequency
+ * speckle that stretch5 then amplifies (a narrow p5..p99 range means a large
+ * stretch gain, turning a few grey levels of sensor wobble into >25-level jumps
+ * that the grain metric counts as noise). A median filter removes that speckle
+ * while preserving ridge edges, so it runs *before* the stretch. Interior
+ * pixels only; the 1px border is left untouched (the grain metric ignores it
+ * too). Operates on a snapshot copy so each output reads only original pixels. */
+static void
+denoise_snapshot_median3x3 (FpImage *img)
+{
+  guint w = img->width;
+  guint h = img->height;
+  g_autofree guint8 *src = NULL;
+  guint8 window[9];
+
+  if (w < 3 || h < 3)
+    return;
+
+  src = g_memdup2 (img->data, (gsize) w * h);
+
+  for (guint y = 1; y + 1 < h; y++)
+    for (guint x = 1; x + 1 < w; x++)
+      {
+        guint idx = 0;
+
+        for (gint dy = -1; dy <= 1; dy++)
+          for (gint dx = -1; dx <= 1; dx++)
+            window[idx++] = src[(y + dy) * w + (x + dx)];
+
+        img->data[y * w + x] = median9 (window);
+      }
+}
+
+static guint
+stage2_grain_pct_x1000 (FpImage *img)
+{
+  guint64 noisy_pixels = 0;
+  guint64 interior_pixels = 0;
+  guint8 window[9];
+
+  if (img->width < 3 || img->height < 3)
+    return G_MAXUINT;
+
+  for (guint y = 1; y + 1 < img->height; y++)
+    {
+      for (guint x = 1; x + 1 < img->width; x++)
+        {
+          guint idx = 0;
+          guint8 med;
+
+          for (gint dy = -1; dy <= 1; dy++)
+            for (gint dx = -1; dx <= 1; dx++)
+              window[idx++] = img->data[(y + dy) * img->width + (x + dx)];
+
+          med = median9 (window);
+          if (ABS ((gint) img->data[y * img->width + x] - (gint) med) >
+              EGIS0575_STAGE2_GRAIN_DIFF_THRESHOLD)
+            noisy_pixels++;
+
+          interior_pixels++;
+        }
+    }
+
+  if (interior_pixels == 0)
+    return G_MAXUINT;
+
+  return (guint) ((noisy_pixels * 100000ULL) / interior_pixels);
+}
+
+static guint
+stage2_ridge_pixels (FpImage *img)
+{
+  guint count = 0;
+
+  for (gsize i = 0; i < (gsize) img->width * img->height; i++)
+    if (img->data[i] < EGIS0575_STAGE2_RIDGE_PIXEL_THRESHOLD)
+      count++;
+
+  return count;
+}
+
+static gboolean
+stage2_minutiae_count (FpImage *img, guint *out_minutiae)
+{
+  MINUTIAE *minutiae = NULL;
+  g_autofree int *quality_map = NULL;
+  g_autofree int *direction_map = NULL;
+  g_autofree int *low_contrast_map = NULL;
+  g_autofree int *low_flow_map = NULL;
+  g_autofree int *high_curve_map = NULL;
+  g_autofree unsigned char *binarized = NULL;
+  g_autofree LFSPARMS *lfsparms = NULL;
+  int map_w = 0, map_h = 0;
+  int bw = 0, bh = 0, bd = 0;
+  int r;
+
+  lfsparms = g_memdup2 (&g_lfsparms_V2, sizeof (LFSPARMS));
+  lfsparms->remove_perimeter_pts = (img->flags & FPI_IMAGE_PARTIAL) ? TRUE : FALSE;
+
+  r = get_minutiae (&minutiae,
+                    &quality_map,
+                    &direction_map,
+                    &low_contrast_map,
+                    &low_flow_map,
+                    &high_curve_map,
+                    &map_w,
+                    &map_h,
+                    &binarized,
+                    &bw,
+                    &bh,
+                    &bd,
+                    img->data,
+                    img->width,
+                    img->height,
+                    8,
+                    img->ppmm,
+                    lfsparms);
+  if (r)
+    {
+      fp_warn ("Stage-2 minutiae scan failed, code %d", r);
+      if (minutiae)
+        free_minutiae (minutiae);
+      return FALSE;
+    }
+
+  *out_minutiae = minutiae ? minutiae->num : 0;
+  if (minutiae)
+    free_minutiae (minutiae);
+
+  return TRUE;
+}
+
+static gboolean
+stage2_snapshot_quality_ok (FpDeviceEgis0575 *self,
+                            FpImage          *img,
+                            guint            *out_grain_pct_x1000,
+                            guint            *out_ridge_pixels,
+                            guint            *out_minutiae,
+                            guint            *out_stretch_p5,
+                            guint            *out_stretch_p99)
+{
+  guint grain_pct_x1000;
+  guint ridge_pixels;
+  guint minutiae = 0;
+  guint stretch_p5 = 0;
+  guint stretch_p99 = 0;
+
+  normalize_snapshot_image_for_stage2 (img);
+  denoise_snapshot_median3x3 (img);
+  enhance_snapshot_image_stretch5 (img, &stretch_p5, &stretch_p99);
+
+  grain_pct_x1000 = stage2_grain_pct_x1000 (img);
+  ridge_pixels = stage2_ridge_pixels (img);
+
+  if (!stage2_minutiae_count (img, &minutiae))
+    {
+      if (out_grain_pct_x1000)
+        *out_grain_pct_x1000 = grain_pct_x1000;
+      if (out_ridge_pixels)
+        *out_ridge_pixels = ridge_pixels;
+      if (out_minutiae)
+        *out_minutiae = 0;
+      if (out_stretch_p5)
+        *out_stretch_p5 = stretch_p5;
+      if (out_stretch_p99)
+        *out_stretch_p99 = stretch_p99;
+      return FALSE;
+    }
+
+  if (out_grain_pct_x1000)
+    *out_grain_pct_x1000 = grain_pct_x1000;
+  if (out_ridge_pixels)
+    *out_ridge_pixels = ridge_pixels;
+  if (out_minutiae)
+    *out_minutiae = minutiae;
+  if (out_stretch_p5)
+    *out_stretch_p5 = stretch_p5;
+  if (out_stretch_p99)
+    *out_stretch_p99 = stretch_p99;
+
+  return grain_pct_x1000 < EGIS0575_STAGE2_GRAIN_PCT_X1000 &&
+         minutiae > EGIS0575_STAGE2_MIN_MINUTIAE &&
+         minutiae < EGIS0575_STAGE2_MAX_MINUTIAE &&
+         ridge_pixels > EGIS0575_STAGE2_MIN_RIDGE_PIXELS;
+}
+
+static FpImage *
+create_processed_snapshot (FpDeviceEgis0575 *self,
+                           FpiUsbTransfer   *transfer)
+{
+  g_autoptr(FpImage) img = fp_image_new (self->padded_img_width, EGIS0575_SENSOR_STRIDE_Y);
+
+  img->width = self->padded_img_width;
+  img->height = EGIS0575_SENSOR_STRIDE_Y;
+  img->flags = FPI_IMAGE_COLORS_INVERTED;
+
+  for (guint src_y = 0; src_y < EGIS0575_SENSOR_STRIDE_Y; src_y++)
+    for (guint src_x = 0; src_x < self->active_width; src_x++)
+      {
+        guint8 val = transfer->buffer[src_y * EGIS0575_SENSOR_STRIDE_X + src_x];
+        guint8 bg = self->background ? self->background[src_y * EGIS0575_SENSOR_STRIDE_X + src_x] : 0;
+
+        img->data[src_y * self->padded_img_width + src_x] = (val > bg + 2) ? val - bg : 0;
+      }
+
+  return fpi_image_resize (img, EGIS0575_RESIZE, EGIS0575_RESIZE);
+}
+
+static void
+image_basic_stats (FpImage *img,
+                   guint   *out_min,
+                   guint   *out_max,
+                   guint   *out_mean)
+{
+  gsize n = (gsize) img->width * img->height;
+  guint min = 255;
+  guint max = 0;
+  guint64 sum = 0;
+
+  for (gsize i = 0; i < n; i++)
+    {
+      guint v = img->data[i];
+      min = MIN (min, v);
+      max = MAX (max, v);
+      sum += v;
+    }
+
+  if (out_min)
+    *out_min = min;
+  if (out_max)
+    *out_max = max;
+  if (out_mean)
+    *out_mean = n ? (guint) (sum / n) : 0;
+}
+
+static void
+pgm_debug_maybe_capture (FpDeviceEgis0575 *self,
+                         FpiUsbTransfer   *transfer,
+                         gboolean          has_valid_data)
+{
+  const gchar *dir = g_getenv ("EGIS0575_PGM_DEBUG_DIR");
+  const gchar *log_path = g_getenv ("EGIS0575_PGM_DEBUG_LOG");
+  gint64 now;
+  guint interval_ms;
+  int coverage = 0;
+  int intensity = 0;
+  guint raw_nonzero;
+  guint raw_finger_pixels;
+  gboolean present;
+  g_autoptr(FpImage) img = NULL;
+  guint grain_pct_x1000 = 0;
+  guint ridge_pixels = 0;
+  guint minutiae = 0;
+  guint stretch_p5 = 0;
+  guint stretch_p99 = 0;
+  guint pixel_min = 0;
+  guint pixel_max = 0;
+  guint pixel_mean = 0;
+  gboolean quality_ok;
+  guint seq;
+  gint64 t_ms;
+  g_autofree gchar *base = NULL;
+  g_autofree gchar *path = NULL;
+  g_autoptr(GError) error = NULL;
+  FILE *logf;
+  gboolean need_header = FALSE;
+
+  if (!pgm_debug_enabled () || !pgm_debug_control_active ())
+    return;
+
+  now = g_get_monotonic_time ();
+  interval_ms = pgm_debug_interval_ms ();
+  if (self->pgm_debug_last_capture_time != 0 &&
+      now - self->pgm_debug_last_capture_time < (gint64) interval_ms * 1000)
+    return;
+
+  if (transfer->actual_length != EGIS0575_IMGSIZE)
+    return;
+
+  if (g_mkdir_with_parents (dir, 0755) != 0)
+    {
+      fp_warn ("PGM debug: failed to create %s", dir);
+      return;
+    }
+
+  calculate_finger_heuristics (self, transfer, &coverage, &intensity);
+  raw_nonzero = (guint) count_nonzero_bytes (transfer);
+  raw_finger_pixels = (guint) count_finger_pixels_raw (transfer);
+  present = has_valid_data &&
+            coverage >= EGIS0575_PRESENCE_MIN_COVERAGE_PCT &&
+            intensity >= EGIS0575_PRESENCE_MIN_INTENSITY &&
+            raw_finger_pixels >= EGIS0575_PRESENCE_MIN_RAW_FINGER_PIXELS;
+
+  img = create_processed_snapshot (self, transfer);
+  quality_ok = stage2_snapshot_quality_ok (self, img,
+                                           &grain_pct_x1000,
+                                           &ridge_pixels,
+                                           &minutiae,
+                                           &stretch_p5,
+                                           &stretch_p99);
+  image_basic_stats (img, &pixel_min, &pixel_max, &pixel_mean);
+
+  self->pgm_debug_last_capture_time = now;
+  seq = ++self->pgm_debug_counter;
+  t_ms = now / 1000;
+  base = g_strdup_printf ("frame-%06u-t%lld.pgm", seq, (long long) t_ms);
+  path = g_build_filename (dir, base, NULL);
+
+  if (!write_image_pgm (img, path, &error))
+    {
+      fp_warn ("PGM debug: failed to write %s: %s", path, error->message);
+      return;
+    }
+
+  if (!log_path || !log_path[0])
+    return;
+
+  need_header = !g_file_test (log_path, G_FILE_TEST_EXISTS);
+  logf = fopen (log_path, "a");
+  if (!logf)
+    {
+      fp_warn ("PGM debug: failed to open metrics log %s", log_path);
+      return;
+    }
+
+  if (need_header)
+    fprintf (logf, "seq,pgm,t_ms,raw_nonzero,raw_finger_pixels,presence,coverage_pct,intensity,grain_pct_x1000,grain_pct,ridge_pixels,minutiae,stretch_p5,stretch_p99,pixel_min,pixel_max,pixel_mean,quality_ok\n");
+
+  fprintf (logf,
+           "%u,%s,%lld,%u,%u,%d,%d,%d,%u,%u.%03u,%u,%u,%u,%u,%u,%u,%u,%d\n",
+           seq,
+           base,
+           (long long) t_ms,
+           raw_nonzero,
+           raw_finger_pixels,
+           present ? 1 : 0,
+           coverage,
+           intensity,
+           grain_pct_x1000,
+           grain_pct_x1000 / 1000,
+           grain_pct_x1000 % 1000,
+           ridge_pixels,
+           minutiae,
+           stretch_p5,
+           stretch_p99,
+           pixel_min,
+           pixel_max,
+           pixel_mean,
+           quality_ok ? 1 : 0);
+  fclose (logf);
+}
+
+static gboolean
+recycle_interface_claim (FpDevice *dev,
+                         const char *reason,
+                         GError **error)
+{
+  GUsbDevice *usb_dev = fpi_device_get_usb_device (dev);
+
+  fp_dbg ("Releasing interface %d before fresh claim (%s)", EGIS0575_INTERFACE, reason);
+  if (!g_usb_device_release_interface (usb_dev,
+                                       EGIS0575_INTERFACE,
+                                       0,
+                                       error))
+    return FALSE;
+
+  fp_dbg ("Re-claiming interface %d (%s)", EGIS0575_INTERFACE, reason);
+  if (!g_usb_device_claim_interface (usb_dev,
+                                     EGIS0575_INTERFACE,
+                                     0,
+                                     error))
+    return FALSE;
+
+  return TRUE;
+}
+
+/* The sensor family appears to budget only ~8 large 64 14 ec reads per
+ * interface claim.  Re-running REPEAT as a "flush" spends the same budget and
+ * wedges the next stage.  Instead, recycle the claim and restart from the
+ * beginning of the packet sequence so every snapshot is captured from a fresh
+ * transport session. */
+static void
+restart_capture_cycle (FpDeviceEgis0575 *self,
+                       FpiSsm           *ssm,
+                       FpDevice         *dev,
+                       const char       *reason,
+                       guint             delay)
+{
+  g_autoptr(GError) error = NULL;
+
+  if (!recycle_interface_claim (dev, reason, &error))
+    {
+      fp_dbg ("Failed to recycle EH575 claim: %s", error->message);
+      fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+      return;
+    }
+
+  self->frame_reads_this_claim = 0;
+  if (self->cal_skip)
+    {
+      self->has_pre_init_run = FALSE;
+      fp_dbg ("Restarting capture cycle from fresh claim in %u ms (%s)", delay, reason);
+      fpi_ssm_jump_to_state_delayed (ssm, SM_INIT, delay);
+    }
+  else
+    {
+      /* Sensor RAM may not survive the claim recycle: re-upload the cached
+       * calibration block (POST_RESET -> enter -> write -> ack) before the
+       * next polling cycle. */
+      self->has_pre_init_run = TRUE;
+      fp_dbg ("Restarting from re-arm (calibration re-upload) in %u ms (%s)", delay, reason);
+      fpi_ssm_jump_to_state_delayed (ssm, SM_POST_RESET, delay);
+    }
+}
+
+static gboolean
+claim_needs_recycle (FpDeviceEgis0575 *self)
+{
+  return self->frame_reads_this_claim >= EGIS0575_MAX_FRAMES_PER_CLAIM;
+}
+
+static void
+restart_for_next_poll (FpDeviceEgis0575 *self,
+                       FpiSsm           *ssm,
+                       FpDevice         *dev,
+                       const char       *reason)
+{
+  if (claim_needs_recycle (self))
+    {
+      fp_dbg ("Frame-read budget reached on this claim (%u/%u), recycling before next poll",
+              self->frame_reads_this_claim,
+              EGIS0575_MAX_FRAMES_PER_CLAIM);
+      restart_capture_cycle (self, ssm, dev, reason, 0);
+      return;
+    }
+
+  fp_dbg ("Retrying next capture immediately without recycling claim (%s)", reason);
+  fpi_ssm_jump_to_state (ssm, SM_INIT);
+}
+
+/* Multi-frame verify: match every collected probe against the stored
+ * feature gallery; verdict when the probe target is reached, the finger is
+ * lifted, or the turn times out. */
+static void
+finalize_verify (FpDeviceEgis0575 *self, FpiSsm *ssm, FpDevice *dev)
+{
+  FpPrint *verify_print = NULL;
+  g_autoptr(FpPrint) probe_print = NULL;
+  g_autoptr(GVariant) stored = NULL;
+  gboolean match = FALSE;
+  int best_overall = 0;
+
+  fpi_device_get_verify_data (dev, &verify_print);
+  g_object_get (verify_print, "fpi-data", &stored, NULL);
+
+  if (!stored || !self->verify_gallery)
+    {
+      g_ptr_array_set_size (self->verify_probes, 0);
+      self->stop = TRUE;
+      fpi_ssm_jump_to_state (ssm, SM_DONE);
+      fpi_device_verify_complete (dev,
+                                  fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                                            "no feature gallery in verify print"));
+      return;
+    }
+
+  for (guint p = 0; p < self->verify_probes->len; p++)
+    {
+      const Egis0575MFeatureSet *probe = g_ptr_array_index (self->verify_probes, p);
+      int best = 0;
+
+      if (probe_matches_gallery (probe, self->verify_gallery,
+                                 self->verify_gallery_n, &best))
+        match = TRUE;
+      if (best > best_overall)
+        best_overall = best;
+    }
+
+  /* report print: first probe's features (diagnostic value only) */
+  if (self->verify_probes->len > 0)
+    {
+      const Egis0575MFeatureSet *p0 = g_ptr_array_index (self->verify_probes, 0);
+      probe_print = fp_print_new (dev);
+
+      fpi_print_set_type (probe_print, FPI_PRINT_RAW);
+      g_object_set (probe_print, "fpi-data",
+                    pack_feature_frames (p0, 1), NULL);
+    }
+
+  fp_info ("Verify (multi-frame): probes=%u best_score=%d/%d => %s",
+           self->verify_probes->len, best_overall, EGIS0575_M_MATCH_THRESHOLD,
+           match ? "MATCH" : "NO-MATCH");
+
+  g_ptr_array_set_size (self->verify_probes, 0);
+
+  self->stop = TRUE;
+  fpi_ssm_jump_to_state (ssm, SM_DONE);
+  /* NULL print: our probe template never equals the enrolled one and a
+   * non-NULL print makes fprintd warn "scanned print that is not matching". */
+  g_clear_object (&probe_print);
+  fpi_device_verify_report (dev,
+                            match ? FPI_MATCH_SUCCESS : FPI_MATCH_FAIL,
+                            NULL,
+                            NULL);
+  fpi_device_verify_complete (dev, NULL);
+}
+
+static void
+on_frame_accepted_enroll (FpDevice *dev,
+                          FpImage  *img)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+  FpPrint *enroll_print = NULL;
+  Egis0575MFeatureSet *fs = &self->enroll_feats[self->enroll_stage];
+
+  fpi_device_get_enroll_data (dev, &enroll_print);
+
+  egis0575_m_extract (img->data, img->width, img->height, fs);
+  g_object_unref (img);
+
+  self->enroll_stage++;
+
+  /* The enrollment template starts as FPI_PRINT_UNDEFINED and is reused across
+   * progress callbacks. Only set the final print type once, right before
+   * completion, otherwise repeated fpi_print_set_type() calls trip the internal
+   * assertion that the type must still be undefined. */
+  fpi_device_enroll_progress (dev, self->enroll_stage, enroll_print, NULL);
+
+  self->capture_armed = FALSE;
+  self->turn_open = FALSE;
+  self->waiting_for_lift = TRUE;
+
+  fp_info ("Enroll stage %u/%u captured (%d features); waiting for lift",
+           self->enroll_stage, NCC_ENROLL_FRAMES, fs->n);
+
+  if (self->enroll_stage < NCC_ENROLL_FRAMES)
+    return;
+
+  GVariant *feats = pack_feature_frames (self->enroll_feats, NCC_ENROLL_FRAMES);
+  fpi_print_set_type (enroll_print, FPI_PRINT_RAW);
+  g_object_set (enroll_print, "fpi-data", feats, NULL);
+
+  self->stop = TRUE;
+  fpi_device_enroll_complete (dev, g_object_ref (enroll_print), NULL);
+}
+
+/* Single-shot like verify: hand the stage-2-qualifying image straight back to
+ * fp_device_capture_finish(). This is the exact resized snapshot the NCC matcher
+ * sees, so PGM debug tooling stores the same pixels the matcher would.
+ * Setting stop=TRUE lets the SSM wind down to SM_DONE after we complete; without
+ * it the poll loop would keep running past the completed action. */
+static void
+on_frame_accepted_capture (FpDevice *dev,
+                           FpImage  *img)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  self->stop = TRUE;
+  fpi_device_capture_complete (dev, img, NULL);
+}
+
+static void
+on_frame_accepted (FpDevice *dev,
+                   FpImage  *img)
+{
+  switch (fpi_device_get_current_action (dev))
+    {
+    case FPI_DEVICE_ACTION_ENROLL:
+      on_frame_accepted_enroll (dev, img);
+      break;
+
+    case FPI_DEVICE_ACTION_VERIFY:
+      /* handled by the multi-frame probe path in save_img */
+      g_object_unref (img);
+      break;
+
+    case FPI_DEVICE_ACTION_CAPTURE:
+      on_frame_accepted_capture (dev, img);
+      break;
+
+    case FPI_DEVICE_ACTION_IDENTIFY:
+    case FPI_DEVICE_ACTION_NONE:
+    case FPI_DEVICE_ACTION_PROBE:
+    case FPI_DEVICE_ACTION_OPEN:
+    case FPI_DEVICE_ACTION_CLOSE:
+    case FPI_DEVICE_ACTION_LIST:
+    case FPI_DEVICE_ACTION_DELETE:
+    case FPI_DEVICE_ACTION_CLEAR_STORAGE:
+    default:
+      g_object_unref (img);
+      break;
+    }
+}
+
+/*
+ * save_img: called once per completed post-init sequence with the raw 5356-byte
+ * frame in transfer->buffer.  Implements the per-touch turn flow:
+ *
+ *  1. No finger / zero frame → close any open turn, clear waiting_for_lift if
+ *     set, arm for next touch. A lift mid-turn (settle or evaluate window) thus
+ *     immediately ends the turn and re-arms.
+ *  2. Finger present, waiting_for_lift or not armed → ignore.
+ *  3. Finger present, armed → open turn; skip frames until FINGER_SETTLE_MS.
+ *  4. Past settle, still within TURN_TIMEOUT_MS → run quality gate once per frame.
+ *     First frame that passes: enhance, submit to on_frame_accepted, done.
+ *  5. TURN_TIMEOUT_MS elapsed without a valid frame → report absent, set
+ *     waiting_for_lift so no new turn starts until the finger is actually lifted.
+ */
+static void
+save_img (FpiUsbTransfer *transfer, FpDevice *dev)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+  FpiSsm *ssm = transfer->ssm;
+  gboolean has_valid_data = valid_data (transfer);
+
+  dump_frame_if_requested (self, transfer, count_nonzero_bytes (transfer));
+  self->frame_reads_this_claim += 1;
+  fp_dbg ("Frame reads in current claim: %u/%u",
+          self->frame_reads_this_claim,
+          EGIS0575_MAX_FRAMES_PER_CLAIM);
+
+  if (self->stop)
+    {
+      fpi_ssm_jump_to_state (ssm, SM_DONE);
+      return;
+    }
+
+  /* ---- Startup warmup: capture the idle baseline as the warm background. ----
+   * Until a baseline exists, finger_detected compares against bg=0 and the hot
+   * idle frame reads as a finger, deadlocking detection. Grab the first few
+   * valid (non-zero) frames unconditionally; skip cold/zero frames (a zero
+   * background fails to cancel the sensor's hot pixels). Don't run finger
+   * detection until this completes. */
+  if (self->background_warmup_remaining > 0)
+    {
+      if (has_valid_data)
+        {
+          update_warm_background (self, transfer);
+          self->background_warmup_remaining--;
+          fp_dbg ("Background warmup: grabbed idle baseline (%u frame(s) left)",
+                  self->background_warmup_remaining);
+        }
+      else
+        {
+          fp_dbg ("Background warmup: skipping cold/zero frame");
+        }
+      restart_for_next_poll (self, ssm, dev, "background warmup");
+      return;
+    }
+
+  if (pgm_debug_enabled ())
+    {
+      gboolean present_now;
+
+      pgm_debug_maybe_capture (self, transfer, has_valid_data);
+      present_now = has_valid_data && finger_detected (self, transfer);
+      if (!present_now && has_valid_data && frame_pixel_std (transfer) < EGIS0575_BG_UPDATE_MAX_STD)
+        update_warm_background (self, transfer);
+      report_finger_status (self, present_now, present_now ? "pgm debug present" : "pgm debug absent");
+      restart_for_next_poll (self, ssm, dev, "pgm debug poll");
+      return;
+    }
+
+  /* ---- No-finger path (zero frame or below detection threshold) ---- */
+  if (!has_valid_data || !finger_detected (self, transfer))
+    {
+      if (has_valid_data && frame_pixel_std (transfer) < EGIS0575_BG_UPDATE_MAX_STD)
+        update_warm_background (self, transfer);
+
+      /* Lift during a verify turn ends collection: match what we have. */
+      if (self->verify_probes && self->verify_probes->len > 0)
+        {
+          fp_dbg ("Lift detected with %u verify probes; finalizing",
+                  self->verify_probes->len);
+          self->turn_open = FALSE;
+          self->capture_armed = FALSE;
+          self->waiting_for_lift = TRUE;
+          report_finger_status (self, FALSE, "lift (verify finalize)");
+          finalize_verify (self, ssm, dev);
+          return;
+        }
+
+      /* Any lift clears the "wait for lift" block and arms a fresh turn. */
+      if (self->waiting_for_lift)
+        {
+          self->waiting_for_lift = FALSE;
+          self->waiting_for_lift_since = 0;
+          fp_dbg ("Lift detected; re-arming for next touch");
+        }
+
+      /* Finger absent: dump any open turn so the next touch starts a fresh
+       * settle + timeout window anchored on the new finger-present moment.
+       * This covers a lift at any point during a turn (settle or evaluate
+       * window), not just after a timeout. */
+      self->turn_open = FALSE;
+      self->capture_armed = TRUE;
+      report_finger_status (self, FALSE, has_valid_data ? "below threshold" : "zero frame");
+      if (has_valid_data && sensor_health_watchdog (self, transfer, ssm, dev))
+        return;   /* watchdog redirected the SSM into recovery */
+      /* Duty-cycled idle frame poll */
+      fpi_ssm_jump_to_state_delayed (ssm, SM_INIT, EGIS0575_IDLE_FRAME_DELAY_MS);
+      return;
+    }
+
+  /* ---- Finger present ---- */
+  /* If they haven't lifted yet... */
+  if (self->waiting_for_lift)
+    {
+      if (self->waiting_for_lift_since == 0)
+        self->waiting_for_lift_since = g_get_monotonic_time ();
+
+      /* Stuck-presence recovery: no real enrollment press keeps the finger on
+       * the sensor for seconds after an accepted frame.  Both flat AGC drift
+       * and structured drift (baseline corrupted by a faint earlier touch)
+       * manifest as permanent finger presence — the timing signature is the
+       * only reliable discriminator, so refresh the baseline unconditionally
+       * after the timeout. */
+      if (g_get_monotonic_time () - self->waiting_for_lift_since >
+          EGIS0575_PHANTOM_LIFT_TIMEOUT_MS * 1000)
+        {
+          fp_warn ("Finger reported present for >%d ms after accept; refreshing background",
+                   EGIS0575_PHANTOM_LIFT_TIMEOUT_MS);
+          update_warm_background (self, transfer);
+          self->waiting_for_lift = FALSE;
+          self->waiting_for_lift_since = 0;
+          self->turn_open = FALSE;
+          self->capture_armed = TRUE;
+          report_finger_status (self, FALSE, "stuck-presence recovery");
+          restart_for_next_poll (self, ssm, dev, "stuck-presence recovery");
+          return;
+        }
+
+      fp_dbg ("Finger still on sensor; waiting for lift before next turn");
+      restart_for_next_poll (self, ssm, dev, "waiting for lift");
+      return;
+    }
+
+  if (!self->turn_open)
+    {
+      self->finger_first_detected_time = g_get_monotonic_time ();
+      self->turn_open = TRUE;
+      report_finger_status (self, TRUE, "finger detected");
+    }
+
+  {
+    gint64 elapsed = g_get_monotonic_time () - self->finger_first_detected_time;
+
+    /* Turn timeout: fail, require lift before next attempt. A verify turn
+     * with collected probes finalizes instead of discarding them. */
+    if (elapsed > EGIS0575_TURN_TIMEOUT_MS * 1000)
+      {
+        if (self->verify_probes && self->verify_probes->len > 0)
+          {
+            fp_dbg ("Turn timed out with %u verify probes; finalizing",
+                    self->verify_probes->len);
+            self->turn_open = FALSE;
+            self->capture_armed = FALSE;
+            self->waiting_for_lift = TRUE;
+            report_finger_status (self, FALSE, "turn timeout (verify finalize)");
+            finalize_verify (self, ssm, dev);
+            return;
+          }
+
+        fp_warn ("Turn timed out after %lld ms; waiting for lift before retry",
+                 (long long) (elapsed / 1000));
+        self->turn_open = FALSE;
+        self->capture_armed = FALSE;
+        self->waiting_for_lift = TRUE;
+        report_finger_status (self, FALSE, "turn timeout");
+        restart_for_next_poll (self, ssm, dev, "turn timeout");
+        return;
+      }
+
+    /* Wait for a lift before arming for the FIRST capture */
+    if (!self->capture_armed)
+      {
+        fp_dbg ("Capture not armed; ignoring finger frame");
+        restart_for_next_poll (self, ssm, dev, "not armed");
+        return;
+      }
+
+    /* Settle window: finger just landed, let the press stabilise. */
+    if (elapsed < EGIS0575_FINGER_SETTLE_MS * 1000)
+      {
+        fp_dbg ("Finger settling (%lld ms / %d ms)", (long long) (elapsed / 1000), EGIS0575_FINGER_SETTLE_MS);
+        restart_for_next_poll (self, ssm, dev, "finger settling");
+        return;
+      }
+
+    /* Past settle, within turn window: evaluate quality. */
+    {
+      g_autoptr(FpImage) resized = NULL;
+      guint grain_pct_x1000 = 0;
+      guint ridge_pixels = 0;
+      guint minutiae = 0;
+      guint stretch_p5 = 0;
+      guint stretch_p99 = 0;
+      gboolean quality_ok;
+
+      resized = create_processed_snapshot (self, transfer);
+
+      /* stage2_snapshot_quality_ok normalises and applies stretch5 in-place. */
+      quality_ok = stage2_snapshot_quality_ok (self, resized,
+                                               &grain_pct_x1000,
+                                               &ridge_pixels,
+                                               &minutiae,
+                                               &stretch_p5,
+                                               &stretch_p99);
+
+      fp_warn ("Stage-2 at %lld ms: grain=%u.%03u%%/<%u.%03u%% ridge=%u/>%u minutiae=%u (%u..%u) => %s",
+               (long long) (elapsed / 1000),
+               grain_pct_x1000 / 1000, grain_pct_x1000 % 1000,
+               EGIS0575_STAGE2_GRAIN_PCT_X1000 / 1000, EGIS0575_STAGE2_GRAIN_PCT_X1000 % 1000,
+               ridge_pixels, EGIS0575_STAGE2_MIN_RIDGE_PIXELS,
+               minutiae, EGIS0575_STAGE2_MIN_MINUTIAE, EGIS0575_STAGE2_MAX_MINUTIAE,
+               quality_ok ? "accept" : "retry");
+
+      maybe_write_live_frame_pgm (resized);
+
+      if (quality_ok)
+        {
+          fp_dbg ("Frame accepted at %lld ms", (long long) (elapsed / 1000));
+          /* resized is already normalised and stretch-enhanced by stage2. */
+
+          if (fpi_device_get_current_action (dev) == FPI_DEVICE_ACTION_VERIFY &&
+              self->verify_probes)
+            {
+              /* Multi-frame verify: keep collecting qualifying frames within
+               * the turn; finalize on target count, lift, or turn timeout.
+               * turn_open/capture_armed stay set so the settle window is not
+               * repeated per probe. */
+              Egis0575MFeatureSet *fs = g_new (Egis0575MFeatureSet, 1);
+
+              egis0575_m_extract (resized->data, resized->width, resized->height, fs);
+              g_ptr_array_add (self->verify_probes, fs);
+              dump_verify_image ("probe", self->verify_probes->len - 1, resized);
+              fp_info ("Verify probe %u/%u captured (%d features)",
+                       self->verify_probes->len, EGIS0575_VERIFY_PROBE_FRAMES, fs->n);
+
+              /* Early exit: a probe that already clears the verdict needs no
+               * further collection — keeps a successful press under ~2s. */
+              if (self->verify_gallery &&
+                  probe_matches_gallery (fs, self->verify_gallery,
+                                         self->verify_gallery_n, NULL))
+                {
+                  fp_info ("Verify probe %u already matches; finalizing early",
+                           self->verify_probes->len);
+                  finalize_verify (self, ssm, dev);
+                }
+              else if (self->verify_probes->len >= EGIS0575_VERIFY_PROBE_FRAMES)
+                finalize_verify (self, ssm, dev);
+              else
+                restart_for_next_poll (self, ssm, dev, "verify probe collection");
+              return;
+            }
+
+          self->turn_open = FALSE;
+          self->capture_armed = FALSE;
+          on_frame_accepted (dev, g_steal_pointer (&resized));
+
+          if (self->stop)
+            fpi_ssm_jump_to_state (ssm, SM_DONE);
+          else
+            restart_capture_cycle (self, ssm, dev, "post-accept poll", EGIS0575_POST_CAPTURE_POLL_DELAY_MS);
+          return;
+        }
+    }
+
+    restart_for_next_poll (self, ssm, dev, "quality gate pending");
+  }
+}
+
+/*
+ * ==================== IO ====================
+ */
+
+static void
+resp_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  if (error)
+    {
+      if (!self->stop &&
+          g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT))
+        {
+          fp_dbg ("Timeout at %s[%d], recycling claim and restarting capture",
+                  packet_array_name (self->pkt_array),
+                  self->current_index);
+          clear_capture_frame (self);
+          restart_capture_cycle (self, transfer->ssm, dev, "timeout recovery", 0);
+          g_error_free (error);
+          return;
+        }
+
+      fp_dbg ("Error occurred at index %d of %s array",
+              self->current_index,
+              packet_array_name (self->pkt_array));
+      fpi_ssm_mark_failed (transfer->ssm, error);
+
+      clear_capture_frame (self);
+      return;
+    }
+
+  fp_dbg ("RX complete for %s[%d]: actual=%zu first-bytes=%02x %02x %02x %02x %02x %02x %02x",
+          packet_array_name (self->pkt_array),
+          self->current_index,
+          transfer->actual_length,
+          transfer->actual_length > 0 ? transfer->buffer[0] : 0,
+          transfer->actual_length > 1 ? transfer->buffer[1] : 0,
+          transfer->actual_length > 2 ? transfer->buffer[2] : 0,
+          transfer->actual_length > 3 ? transfer->buffer[3] : 0,
+          transfer->actual_length > 4 ? transfer->buffer[4] : 0,
+          transfer->actual_length > 5 ? transfer->buffer[5] : 0,
+          transfer->actual_length > 6 ? transfer->buffer[6] : 0);
+
+  if (self->current_index == self->pkt_array_len - 1)
+    {
+      if (self->pkt_array[self->current_index].response_length == 5356)
+        {
+          /* Frame-capturing array complete (POST_CAL or POST_INIT): the last
+           * packet's 5356-byte response is a raw frame. save_img evaluates it
+           * and either accepts it or recycles the claim for another poll. */
+          fp_dbg ("Completed %s sequence, passing frame to save_img",
+                  packet_array_name (self->pkt_array));
+          self->current_index = 0;
+          save_img (transfer, dev);
+          return;
+        }
+      else if (self->pkt_array == EGIS0575_PRE_INIT_PACKETS)
+        {
+          /* Pre-init complete — switch to post-init for the frame capture
+           * (calibration-skip path only). */
+          fp_dbg ("Completed pre-init sequence, switching to post-init");
+          self->has_pre_init_run = TRUE;
+          self->pkt_array = EGIS0575_POST_INIT_PACKETS;
+          self->pkt_array_len = EGIS0575_POST_INIT_PACKETS_LENGTH;
+          self->current_index = 0;
+        }
+    }
+  else if (self->pkt_array == EGIS0575_POST_INIT_PACKETS &&
+           self->current_index == 1 &&
+           transfer->actual_length >= 7 &&
+           transfer->buffer[4] == 0x01 &&
+           transfer->buffer[5] == 0x01 &&
+           transfer->buffer[6] == 0x01)
+    {
+      /*
+       * EH575 semantics (Animeshz capture analysis): SIGE 01 01 01 at
+       * POST_INIT[1] (the 60 01 fc poll) means "pre initialization required" —
+       * the sensor lost its armed state.  Rerun the full pre-init sequence
+       * instead of continuing the post-init array.
+       */
+      fp_dbg ("Pre-initialization required; switching back to pre-init");
+      self->has_pre_init_run = FALSE;
+      self->pkt_array = EGIS0575_PRE_INIT_PACKETS;
+      self->pkt_array_len = EGIS0575_PRE_INIT_PACKETS_LENGTH;
+      self->current_index = 0;
+    }
+  else
+    {
+      self->current_index += 1;
+    }
+
+  fpi_ssm_jump_to_state (transfer->ssm, SM_REQ);
+}
+
+static void
+recv_resp (FpiSsm *ssm, FpDevice *dev, int response_length)
+{
+  FpiUsbTransfer *transfer = fpi_usb_transfer_new (dev);
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  fp_dbg ("Submitting bulk IN for %s[%d], expecting %d bytes",
+          packet_array_name (self->pkt_array),
+          self->current_index,
+          response_length);
+
+  fpi_usb_transfer_fill_bulk (transfer, EGIS0575_EPIN, response_length);
+
+  transfer->ssm = ssm;
+  transfer->short_is_error = TRUE;
+
+  fpi_usb_transfer_submit (transfer, EGIS0575_TIMEOUT, NULL, resp_cb, NULL);
+}
+
+static void
+req_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+  gboolean first_preinit = self->pkt_array == EGIS0575_PRE_INIT_PACKETS &&
+                           self->current_index == 0 &&
+                           !self->has_pre_init_run;
+
+  if (error)
+    {
+      if (!self->stop &&
+          g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT))
+        {
+          if (first_preinit)
+            {
+              if (self->startup_timeout_retries < EGIS0575_STARTUP_TIMEOUT_RECOVERY_MAX)
+                {
+                  self->startup_timeout_retries++;
+                  fp_warn ("Timeout sending first pre-init packet; recycling claim and retrying startup (%u/%u)",
+                           self->startup_timeout_retries,
+                           EGIS0575_STARTUP_TIMEOUT_RECOVERY_MAX);
+                  clear_capture_frame (self);
+                  restart_capture_cycle (self,
+                                         transfer->ssm,
+                                         dev,
+                                         "startup timeout recovery",
+                                         EGIS0575_STARTUP_TIMEOUT_RECOVERY_DELAY_MS);
+                  g_error_free (error);
+                  return;
+                }
+
+              /* Claim-recycle retries exhausted; the device is transport-wedged.
+               * Fail cleanly — the reliable recovery is unplug/replug. */
+              fp_warn ("EH575 not responding to init after %u claim recycles; sensor is transport-wedged — unplug and replug it, then retry",
+                       EGIS0575_STARTUP_TIMEOUT_RECOVERY_MAX);
+              clear_capture_frame (self);
+              fpi_ssm_mark_failed (transfer->ssm,
+                                   fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                             "EH575 did not respond to init (transport-wedged); unplug and replug the sensor, then retry"));
+              g_error_free (error);
+              return;
+            }
+
+          fp_dbg ("Timeout at %s[%d], recycling claim and restarting capture",
+                  packet_array_name (self->pkt_array),
+                  self->current_index);
+          clear_capture_frame (self);
+          restart_capture_cycle (self, transfer->ssm, dev, "timeout recovery", 0);
+          g_error_free (error);
+          return;
+        }
+
+      fp_dbg ("Error occurred sending packet at index %d of %s array",
+              self->current_index,
+              packet_array_name (self->pkt_array));
+      fpi_ssm_mark_failed (transfer->ssm, error);
+      clear_capture_frame (self);
+      return;
+    }
+
+  if (first_preinit && self->startup_timeout_retries > 0)
+    {
+      fp_dbg ("Recovered startup after %u claim retr%s",
+              self->startup_timeout_retries,
+              self->startup_timeout_retries == 1 ? "y" : "ies");
+      self->startup_timeout_retries = 0;
+    }
+
+  fpi_ssm_next_state (transfer->ssm);
+}
+
+static void
+send_req (FpiSsm *ssm, FpDevice *dev, const Packet *pkt)
+{
+  FpiUsbTransfer *transfer = fpi_usb_transfer_new (dev);
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  fp_dbg ("Submitting bulk OUT for %s[%d/%d]: %02x %02x %02x len=%d expect=%d",
+          packet_array_name (self->pkt_array),
+          self->current_index,
+          self->pkt_array_len,
+          pkt->sequence[4],
+          pkt->sequence[5],
+          pkt->sequence[6],
+          pkt->length,
+          pkt->response_length);
+
+  fpi_usb_transfer_fill_bulk_full (transfer, EGIS0575_EPOUT, pkt->sequence, pkt->length, NULL);
+
+  transfer->ssm = ssm;
+  transfer->short_is_error = TRUE;
+
+  fpi_usb_transfer_submit (transfer, EGIS0575_TIMEOUT, NULL, req_cb, NULL);
+}
+
+/*
+ * ==================== Calibration helpers ====================
+ */
+
+static void
+cal_packet_ssm_run_state (FpiSsm *ssm, FpDevice *dev)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+  FpiUsbTransfer *transfer;
+  const Packet *pkt;
+
+  fpi_ssm_silence_debug (ssm);
+
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case PACKET_SSM_REQ:
+      pkt = &self->cal_pkt_array[self->cal_pkt_index];
+      transfer = fpi_usb_transfer_new (dev);
+
+      fpi_usb_transfer_fill_bulk_full (transfer, EGIS0575_EPOUT, pkt->sequence, pkt->length, NULL);
+
+      transfer->ssm = ssm;
+      transfer->short_is_error = TRUE;
+
+      fpi_usb_transfer_submit (transfer, EGIS0575_TIMEOUT, NULL, fpi_ssm_usb_transfer_cb, NULL);
+      break;
+
+    case PACKET_SSM_RESP:
+      transfer = fpi_usb_transfer_new (dev);
+
+      fpi_usb_transfer_fill_bulk (transfer, EGIS0575_EPIN,
+                                  self->cal_pkt_array[self->cal_pkt_index].response_length);
+
+      transfer->ssm = ssm;
+      transfer->short_is_error = TRUE;
+
+      fpi_usb_transfer_submit (transfer, EGIS0575_TIMEOUT, NULL, fpi_ssm_usb_transfer_cb, NULL);
+      self->cal_pkt_index++;
+      break;
+
+    case PACKET_SSM_LOOP:
+      if (self->cal_pkt_index == self->cal_pkt_len)
+        fpi_ssm_mark_completed (ssm);
+      else
+        fpi_ssm_jump_to_state (ssm, PACKET_SSM_REQ);
+      break;
+
+    default:
+      g_assert_not_reached ();
+    }
+}
+
+static void
+start_cal_packet_array (FpDeviceEgis0575 *self,
+                        FpiSsm           *ssm,
+                        const Packet     *array,
+                        int               len)
+{
+  self->cal_pkt_array = array;
+  self->cal_pkt_len = len;
+  self->cal_pkt_index = 0;
+
+  fpi_ssm_start_subsm (ssm,
+                       fpi_ssm_new (FP_DEVICE (self),
+                                    cal_packet_ssm_run_state,
+                                    PACKET_SSM_DONE));
+}
+
+/* Best-effort variant for the shutdown sequence: transfer errors are ignored
+ * so a wedged sensor cannot fail an action that already completed. */
+static void
+shutdown_ignoring_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
+{
+  if (error)
+    g_error_free (error);
+
+  fpi_ssm_next_state (transfer->ssm);
+}
+
+static void
+shutdown_packet_ssm_run_state (FpiSsm *ssm, FpDevice *dev)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+  FpiUsbTransfer *transfer;
+  const Packet *pkt;
+
+  fpi_ssm_silence_debug (ssm);
+
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case PACKET_SSM_REQ:
+      pkt = &self->cal_pkt_array[self->cal_pkt_index];
+      transfer = fpi_usb_transfer_new (dev);
+      fpi_usb_transfer_fill_bulk_full (transfer, EGIS0575_EPOUT, pkt->sequence, pkt->length, NULL);
+      transfer->ssm = ssm;
+      fpi_usb_transfer_submit (transfer, EGIS0575_TIMEOUT, NULL, shutdown_ignoring_cb, NULL);
+      break;
+
+    case PACKET_SSM_RESP:
+      transfer = fpi_usb_transfer_new (dev);
+      fpi_usb_transfer_fill_bulk (transfer, EGIS0575_EPIN,
+                                  self->cal_pkt_array[self->cal_pkt_index].response_length);
+      transfer->ssm = ssm;
+      fpi_usb_transfer_submit (transfer, EGIS0575_TIMEOUT, NULL, shutdown_ignoring_cb, NULL);
+      self->cal_pkt_index++;
+      break;
+
+    case PACKET_SSM_LOOP:
+      if (self->cal_pkt_index == self->cal_pkt_len)
+        fpi_ssm_mark_completed (ssm);
+      else
+        fpi_ssm_jump_to_state (ssm, PACKET_SSM_REQ);
+      break;
+
+    default:
+      g_assert_not_reached ();
+    }
+}
+
+static void
+cal_send (FpiSsm                *ssm,
+          FpDevice              *dev,
+          const unsigned char   *sequence,
+          int                    length,
+          FpiUsbTransferCallback callback)
+{
+  FpiUsbTransfer *transfer = fpi_usb_transfer_new (dev);
+
+  fpi_usb_transfer_fill_bulk_full (transfer, EGIS0575_EPOUT, (unsigned char *) sequence, length, NULL);
+
+  transfer->ssm = ssm;
+  transfer->short_is_error = TRUE;
+
+  fpi_usb_transfer_submit (transfer, EGIS0575_TIMEOUT, NULL, callback, NULL);
+}
+
+static void
+cal_read (FpiSsm                *ssm,
+          FpDevice              *dev,
+          int                    length,
+          FpiUsbTransferCallback callback)
+{
+  FpiUsbTransfer *transfer = fpi_usb_transfer_new (dev);
+
+  fpi_usb_transfer_fill_bulk (transfer, EGIS0575_EPIN, length);
+
+  transfer->ssm = ssm;
+  transfer->short_is_error = TRUE;
+
+  fpi_usb_transfer_submit (transfer, EGIS0575_TIMEOUT, NULL, callback, NULL);
+}
+
+/* Status-poll responses: wait until resp[5] reaches the phase-specific value
+ * (bounded by EGIS0575_CAL_POLL_MAX_ITERS so a wedged sensor fails cleanly). */
+static void
+cal_status_poll_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  if (error)
+    {
+      fpi_ssm_mark_failed (transfer->ssm, error);
+      return;
+    }
+
+  if (self->cal_poll_iters++ > EGIS0575_CAL_POLL_MAX_ITERS)
+    {
+      fpi_ssm_mark_failed (transfer->ssm,
+                           fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                     "calibration status poll did not converge"));
+      return;
+    }
+
+  switch (fpi_ssm_get_cur_state (transfer->ssm))
+    {
+    case SM_CAL_POLL_2_RESP:
+      if (transfer->buffer[5] != 0x05)
+        fpi_ssm_jump_to_state (transfer->ssm, SM_CAL_POLL_2_REQ);
+      else
+        fpi_ssm_next_state (transfer->ssm);
+      break;
+
+    case SM_CAL_POLL_4_RESP:
+      if (transfer->buffer[5] != 0x00)
+        fpi_ssm_jump_to_state (transfer->ssm, SM_CAL_POLL_4_REQ);
+      else
+        fpi_ssm_next_state (transfer->ssm);
+      break;
+
+    case SM_RESET_POLL_RESP:
+      if (transfer->buffer[5] == 0x00)
+        fpi_ssm_jump_to_state (transfer->ssm, SM_RESET_POLL_REQ);
+      else
+        fpi_ssm_next_state (transfer->ssm);
+      break;
+
+    default:
+      fpi_ssm_mark_failed (transfer->ssm,
+                           g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                                "calibration poll callback in wrong state"));
+      break;
+    }
+}
+
+/*
+ * ==================== SSM loopback ====================
+ */
+
+static void
+ssm_run_state (FpiSsm *ssm, FpDevice *dev)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case SM_CAL_START:
+      if (self->cal_skip)
+        {
+          fp_dbg ("Calibration skipped (EGIS0575_SKIP_CALIBRATION=1)");
+          self->has_pre_init_run = FALSE;
+          fpi_ssm_jump_to_state (ssm, SM_INIT);
+        }
+      else if (self->calibration)
+        {
+          /* Cal block already cached this session: re-arm the sensor by
+           * re-uploading it (POST_RESET -> 73 14 ec -> write -> ack). */
+          fp_dbg ("Calibration cached; re-arming sensor");
+          fpi_ssm_jump_to_state (ssm, SM_POST_RESET);
+        }
+      else
+        {
+          fp_dbg ("Reading calibration block from sensor");
+          self->cal_poll_iters = 0;
+          fpi_ssm_next_state (ssm);
+        }
+      break;
+
+    case SM_CAL_PHASE_1:
+      start_cal_packet_array (self, ssm,
+                              EGIS0575_CAL_PHASE_1_PACKETS,
+                              EGIS0575_CAL_PHASE_1_PACKETS_LENGTH);
+      break;
+
+    case SM_CAL_POLL_2_REQ:
+      cal_send (ssm, dev, EGIS0575_CAL_POLL_2.sequence, EGIS0575_CAL_POLL_2.length,
+                fpi_ssm_usb_transfer_cb);
+      break;
+
+    case SM_CAL_POLL_2_RESP:
+      cal_read (ssm, dev, 7, cal_status_poll_cb);
+      break;
+
+    case SM_CAL_PHASE_3:
+      start_cal_packet_array (self, ssm,
+                              EGIS0575_CAL_PHASE_3_PACKETS,
+                              EGIS0575_CAL_PHASE_3_PACKETS_LENGTH);
+      break;
+
+    case SM_CAL_POLL_4_REQ:
+      cal_send (ssm, dev, EGIS0575_CAL_POLL_4.sequence, EGIS0575_CAL_POLL_4.length,
+                fpi_ssm_usb_transfer_cb);
+      break;
+
+    case SM_CAL_POLL_4_RESP:
+      cal_read (ssm, dev, 7, cal_status_poll_cb);
+      break;
+
+    case SM_CAL_PHASE_5:
+      start_cal_packet_array (self, ssm,
+                              EGIS0575_CAL_PHASE_5_PACKETS,
+                              EGIS0575_CAL_PHASE_5_PACKETS_LENGTH);
+      break;
+
+    case SM_CAL_READ_REQ:
+      cal_send (ssm, dev, (const unsigned char[]){0x45, 0x47, 0x49, 0x53, 0x72, 0x14, 0xec}, 7,
+                fpi_ssm_usb_transfer_cb);
+      break;
+
+    case SM_CAL_READ_RESP:
+      {
+        FpiUsbTransfer *transfer = fpi_usb_transfer_new (dev);
+
+        self->calibration = g_malloc0 (EGIS0575_IMGSIZE);
+        fpi_usb_transfer_fill_bulk_full (transfer, EGIS0575_EPIN, self->calibration,
+                                         EGIS0575_IMGSIZE, NULL);
+
+        transfer->ssm = ssm;
+        transfer->short_is_error = TRUE;
+
+        fpi_usb_transfer_submit (transfer, EGIS0575_TIMEOUT, NULL, fpi_ssm_usb_transfer_cb, NULL);
+      }
+      break;
+
+    case SM_CAL_CHECK:
+      {
+        /* A broken read leaves a long run of identical trailing bytes (topni1
+         * measured 0x3f); discard the block and fail the action cleanly. */
+        unsigned char last_byte = self->calibration[EGIS0575_IMGSIZE - 1];
+        gboolean broken = TRUE;
+
+        for (int i = EGIS0575_IMGSIZE - 2; i > EGIS0575_IMGSIZE - 100; i--)
+          {
+            if (self->calibration[i] != last_byte)
+              {
+                broken = FALSE;
+                break;
+              }
+          }
+
+        if (broken)
+          {
+            fp_warn ("Calibration block broken (trailing run of identical bytes); retry later");
+            g_clear_pointer (&self->calibration, g_free);
+            fpi_ssm_mark_failed (ssm,
+                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                           "broken calibration block, retry later"));
+            return;
+          }
+
+        fp_dbg ("Calibration block read OK");
+        fpi_ssm_next_state (ssm);
+      }
+      break;
+
+    case SM_PRE_RESET:
+      start_cal_packet_array (self, ssm,
+                              EGIS0575_PRE_RESET_PACKETS,
+                              EGIS0575_PRE_RESET_PACKETS_LENGTH);
+      break;
+
+    case SM_RESET_POLL_REQ:
+      cal_send (ssm, dev, (const unsigned char[]){0x45, 0x47, 0x49, 0x53, 0x60, 0x00}, 6,
+                fpi_ssm_usb_transfer_cb);
+      break;
+
+    case SM_RESET_POLL_RESP:
+      cal_read (ssm, dev, 7, cal_status_poll_cb);
+      break;
+
+    case SM_POST_RESET:
+      start_cal_packet_array (self, ssm,
+                              EGIS0575_POST_RESET_PACKETS,
+                              EGIS0575_POST_RESET_PACKETS_LENGTH);
+      break;
+
+    case SM_CAL_ENTER_REQ:
+      cal_send (ssm, dev, EGIS0575_CAL_ENTER_PACKET.sequence, EGIS0575_CAL_ENTER_PACKET.length,
+                fpi_ssm_usb_transfer_cb);
+      break;
+
+    case SM_CAL_WRITE:
+      {
+        FpiUsbTransfer *transfer = fpi_usb_transfer_new (dev);
+
+        fpi_usb_transfer_fill_bulk_full (transfer, EGIS0575_EPOUT, self->calibration,
+                                         EGIS0575_IMGSIZE, NULL);
+
+        transfer->ssm = ssm;
+        transfer->short_is_error = TRUE;
+
+        fpi_usb_transfer_submit (transfer, EGIS0575_TIMEOUT, NULL, fpi_ssm_usb_transfer_cb, NULL);
+      }
+      break;
+
+    case SM_CAL_ACK:
+      cal_read (ssm, dev, 7, fpi_ssm_usb_transfer_cb);
+      self->last_full_init_time = g_get_monotonic_time ();
+      break;
+
+    case SM_INIT:
+      fp_dbg ("Starting capture");
+      if (!self->cal_skip)
+        {
+          /* Calibration path: poll with the post-calibration table directly.
+           * Its trailing 64 14 ec frame read feeds save_img (first pass is a
+           * warm-up frame for the background baseline). */
+          self->pkt_array = EGIS0575_POST_CALIBRATION_PACKETS;
+          self->pkt_array_len = EGIS0575_POST_CALIBRATION_PACKETS_LENGTH;
+          self->has_pre_init_run = TRUE;
+        }
+      else if (self->has_pre_init_run)
+        {
+          self->pkt_array = EGIS0575_POST_INIT_PACKETS;
+          self->pkt_array_len = EGIS0575_POST_INIT_PACKETS_LENGTH;
+        }
+      else
+        {
+          self->pkt_array = EGIS0575_PRE_INIT_PACKETS;
+          self->pkt_array_len = EGIS0575_PRE_INIT_PACKETS_LENGTH;
+        }
+      self->current_index = 0;
+
+      clear_capture_frame (self);
+      fp_dbg ("Initial packet array: %s (claim_frames=%u/%u, active_width=%u, stage2: grain<%u.%03u%% minutiae=%u..%u ridge>%u)",
+              packet_array_name (self->pkt_array),
+              self->frame_reads_this_claim,
+              EGIS0575_MAX_FRAMES_PER_CLAIM,
+              self->active_width,
+              EGIS0575_STAGE2_GRAIN_PCT_X1000 / 1000,
+              EGIS0575_STAGE2_GRAIN_PCT_X1000 % 1000,
+              EGIS0575_STAGE2_MIN_MINUTIAE,
+              EGIS0575_STAGE2_MAX_MINUTIAE,
+              EGIS0575_STAGE2_MIN_RIDGE_PIXELS);
+      if (!self->has_pre_init_run && self->pkt_array == EGIS0575_PRE_INIT_PACKETS && self->current_index == 0)
+        {
+          fp_dbg ("Applying %u ms startup settle delay before first pre-init packet",
+                  EGIS0575_STARTUP_SETTLE_DELAY_MS);
+          fpi_ssm_jump_to_state_delayed (ssm, SM_START, EGIS0575_STARTUP_SETTLE_DELAY_MS);
+        }
+      else
+        {
+          fpi_ssm_next_state (ssm);
+        }
+      break;
+
+    case SM_START:
+      if (self->stop)
+        {
+          fp_dbg ("Stopping, completed capture");
+          fpi_ssm_mark_completed (ssm);
+        }
+      else
+        {
+          fpi_ssm_next_state (ssm);
+        }
+      break;
+
+    case SM_REQ:
+      fp_dbg ("SSM_REQ using %s[%d/%d]",
+              packet_array_name (self->pkt_array),
+              self->current_index,
+              self->pkt_array_len);
+
+      send_req (ssm, dev, &self->pkt_array[self->current_index]);
+      break;
+
+    case SM_RESP:
+      fp_dbg ("SSM_RESP waiting on %s[%d/%d]",
+              packet_array_name (self->pkt_array),
+              self->current_index,
+              self->pkt_array_len);
+      recv_resp (ssm, dev, self->pkt_array[self->current_index].response_length);
+      break;
+
+    case SM_DONE:
+      fp_dbg ("Capture loop stopping; shutting sensor down");
+      self->cal_pkt_array = EGIS0575_SHUTDOWN_PACKETS;
+      self->cal_pkt_len = EGIS0575_SHUTDOWN_PACKETS_LENGTH;
+      self->cal_pkt_index = 0;
+      fpi_ssm_start_subsm (ssm,
+                           fpi_ssm_new (FP_DEVICE (dev),
+                                        shutdown_packet_ssm_run_state,
+                                        PACKET_SSM_DONE));
+      break;
+
+    case SM_SHUTDOWN:
+      /* shutdown subsm completed (best-effort); finish the loop */
+      fpi_ssm_jump_to_state (ssm, SM_FINISH);
+      break;
+
+    case SM_FINISH:
+      fpi_ssm_mark_completed (ssm);
+      break;
+
+    default:
+      g_assert_not_reached ();
+    }
+}
+
+static void
+loop_complete (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+  GCancellable *cancellable = NULL;
+  g_autoptr(GError) cancelled = NULL;
+
+  self->running = FALSE;
+  self->capture_ssm = NULL;
+  self->cancel_watchdog_armed = FALSE;
+
+  if (error)
+    {
+      fp_dbg ("Capture loop completed with error: %s", error->message);
+      fpi_device_action_error (dev, error);
+      return;
+    }
+
+  if (fpi_device_get_current_action (dev) != FPI_DEVICE_ACTION_NONE)
+    cancellable = fpi_device_get_cancellable (dev);
+
+  if (cancellable && g_cancellable_set_error_if_cancelled (cancellable, &cancelled))
+    {
+      fp_dbg ("Capture loop completed after cancellation");
+      fpi_device_action_error (dev, g_steal_pointer (&cancelled));
+      return;
+    }
+
+  fp_dbg ("Capture loop completed cleanly");
+}
+
+/*
+ * ==================== Top-level command callback & meta-data ====================
+ */
+
+static void
+reset_action_state (FpDeviceEgis0575 *self)
+{
+  self->stop = FALSE;
+  self->finger_reported = FALSE;
+  self->capture_armed = FALSE;
+  self->waiting_for_lift = FALSE;
+  self->waiting_for_lift_since = 0;
+  self->frame_counter = 0;
+  self->pgm_debug_counter = 0;
+  self->pgm_debug_last_capture_time = 0;
+  self->frame_reads_this_claim = 0;
+  self->turn_open = FALSE;
+  self->has_pre_init_run = FALSE;
+  self->startup_timeout_retries = 0;
+  self->cal_poll_iters = 0;
+  self->weak_press_events = 0;
+  self->weak_press_window_start = 0;
+  self->background_warmup_remaining = EGIS0575_BACKGROUND_WARMUP_FRAMES;
+  clear_capture_frame (self);
+  clear_background (self);
+}
+
+static void
+start_capture_action (FpDevice *dev)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+  FpiSsm *ssm = fpi_ssm_new (dev, ssm_run_state, SM_STATES_NUM);
+
+  reset_action_state (self);
+  self->capture_ssm = ssm;
+  fpi_ssm_start (ssm, loop_complete);
+  self->running = TRUE;
+}
+
+static void
+dev_cancel (FpDevice *dev)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  fp_dbg ("Cancel requested (running=%d stop=%d)", self->running, self->stop);
+  self->stop = TRUE;
+  if (self->running && !self->cancel_watchdog_armed)
+    {
+      self->cancel_watchdog_armed = TRUE;
+      fpi_device_add_timeout (dev, 1000, cancel_watchdog_cb, NULL, NULL);
+    }
+}
+
+/* fprintd 1.94.5 can abandon a cancelled action without ever sending close
+ * (killed client mid-verify leaves the claim stuck). Force the capture
+ * loop to a terminal state so the action completes and fprintd unblocks. */
+static void
+cancel_watchdog_cb (FpDevice *dev, gpointer user_data)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  if (self->cancel_watchdog_armed && self->running && self->capture_ssm)
+    {
+      fp_warn ("Cancel watchdog: capture loop still running 1s after cancel; forcing failure");
+      fpi_ssm_mark_failed (self->capture_ssm,
+                           fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                     "cancel watchdog: loop did not wind down"));
+    }
+  self->cancel_watchdog_armed = FALSE;
+}
+
+static void
+dev_open (FpDevice *dev)
+{
+  GError *error = NULL;
+  GUsbDevice *usb_dev = fpi_device_get_usb_device (dev);
+
+  fp_dbg ("Opening EH575 device (active_width=%u)", FPI_DEVICE_EGIS0575 (dev)->active_width);
+  fp_dbg ("Claiming interface %d", EGIS0575_INTERFACE);
+  if (!g_usb_device_claim_interface (usb_dev,
+                                     EGIS0575_INTERFACE,
+                                     0,
+                                     &error))
+    {
+      fpi_device_open_complete (dev, error);
+      return;
+    }
+
+  /* Keep open lightweight; startup hardening happens via a short settle delay
+   * before the first pre-init packet and claim-recycle on timeout. */
+  fp_dbg ("Settling %u ms after claim before first action", EGIS0575_STARTUP_SETTLE_DELAY_MS);
+  g_usleep (EGIS0575_STARTUP_SETTLE_DELAY_MS * 1000);
+
+  fpi_device_open_complete (dev, NULL);
+}
+
+static void
+dev_close (FpDevice *dev)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  if (self->running)
+    {
+      /* Releasing the interface with in-flight URBs can wedge the sensor
+       * firmware at the USB level (observed as device-not-accepting-address
+       * after close-mid-transfer). Set the stop flag and complete the close
+       * once the capture loop has wound down. */
+      fp_dbg ("Close while capture loop running; deferring interface release");
+      self->stop = TRUE;
+      self->close_pending = TRUE;
+      fpi_device_add_timeout (dev, 50, close_poll_cb, NULL, NULL);
+      return;
+    }
+
+  egis0575_finish_close (dev);
+}
+
+static void
+close_poll_cb (FpDevice *dev, gpointer user_data)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  if (self->running)
+    {
+      fp_dbg ("Close: capture loop still running, waiting");
+      fpi_device_add_timeout (dev, 50, close_poll_cb, NULL, NULL);
+      return;
+    }
+
+  self->close_pending = FALSE;
+  egis0575_finish_close (dev);
+}
+
+static void
+egis0575_finish_close (FpDevice *dev)
+{
+  GError *error = NULL;
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  clear_capture_frame (self);
+  clear_background (self);
+  /* Fresh calibration read on next open: sensor state across close is unknown. */
+  g_clear_pointer (&self->calibration, g_free);
+  g_clear_pointer (&self->verify_probes, g_ptr_array_unref);
+  g_clear_pointer (&self->verify_gallery, g_free);
+  self->verify_gallery_n = 0;
+  g_clear_pointer (&self->enroll_feats, g_free);
+  fp_dbg ("Releasing interface %d", EGIS0575_INTERFACE);
+  g_usb_device_release_interface (fpi_device_get_usb_device (dev),
+                                  EGIS0575_INTERFACE,
+                                  0,
+                                  &error);
+
+  fpi_device_close_complete (dev, error);
+}
+
+static void
+dev_enroll (FpDevice *dev)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  fp_dbg ("Enroll requested");
+  g_clear_pointer (&self->enroll_feats, g_free);
+  self->enroll_feats = g_new0 (Egis0575MFeatureSet, NCC_ENROLL_FRAMES);
+  self->enroll_stage = 0;
+
+  start_capture_action (dev);
+}
+
+/* Dump verify-time probes and the stored gallery to PGM files for offline
+ * matcher analysis (EGIS0575_VERIFY_DUMP_DIR). */
+static void
+dump_verify_image (const gchar *kind, guint index, FpImage *img)
+{
+  const gchar *dir = g_getenv ("EGIS0575_VERIFY_DUMP_DIR");
+  g_autofree gchar *path = NULL;
+  g_autoptr(GError) error = NULL;
+
+  if (!dir || !dir[0])
+    return;
+
+  g_mkdir_with_parents (dir, 0755);
+
+  path = g_strdup_printf ("%s/%s-%03u.pgm", dir, kind, index);
+  if (!write_image_pgm (img, path, &error))
+    fp_warn ("verify dump: failed to write %s: %s", path, error->message);
+}
+
+static void
+dump_verify_gallery (FpDevice *dev)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+
+  if (!g_getenv ("EGIS0575_VERIFY_DUMP_DIR"))
+    return;
+
+  for (guint i = 0; i < self->verify_gallery_n; i++)
+    fp_dbg ("gallery frame %u: %d features", i, self->verify_gallery[i].n);
+}
+
+static void
+dev_verify (FpDevice *dev)
+{
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
+  FpPrint *verify_print = NULL;
+  g_autoptr(GVariant) stored = NULL;
+
+  fp_dbg ("Verify requested (multi-frame probes)");
+  g_clear_pointer (&self->verify_probes, g_ptr_array_unref);
+  self->verify_probes = g_ptr_array_new_with_free_func (g_free);
+
+  g_clear_pointer (&self->verify_gallery, g_free);
+  self->verify_gallery_n = 0;
+
+  fpi_device_get_verify_data (dev, &verify_print);
+  g_object_get (verify_print, "fpi-data", &stored, NULL);
+  if (stored && !unpack_feature_frames (stored, &self->verify_gallery,
+                                        &self->verify_gallery_n))
+    fp_warn ("Verify print has no valid feature gallery");
+
+  dump_verify_gallery (dev);
+
+  start_capture_action (dev);
+}
+
+static void
+dev_capture (FpDevice *dev)
+{
+  fp_dbg ("Capture requested");
+  start_capture_action (dev);
+}
+
+static const FpIdEntry id_table[] = {{
+                                        .vid = 0x1c7a,
+                                        .pid = 0x0575,
+                                      }};
+
+static void
+fpi_device_egis0575_init (FpDeviceEgis0575 *self)
+{
+  const gchar *env = g_getenv ("EGIS0575_ACTIVE_WIDTH");
+
+  self->cal_skip = (g_strcmp0 (g_getenv ("EGIS0575_SKIP_CALIBRATION"), "1") == 0);
+  self->active_width = EGIS0575_SENSOR_ACTIVE_WIDTH_DEFAULT;
+
+  if (env && env[0])
+    {
+      gint64 parsed = g_ascii_strtoll (env, NULL, 10);
+
+      if (parsed >= 1 && parsed <= EGIS0575_SENSOR_STRIDE_X)
+        self->active_width = (guint) parsed;
+      else
+        fp_warn ("Ignoring EGIS0575_ACTIVE_WIDTH=%s (must be 1..%d)",
+                 env, EGIS0575_SENSOR_STRIDE_X);
+    }
+
+  self->padded_img_width = ((self->active_width + 3) / 4) * 4;
+}
+
+static void
+fpi_device_egis0575_class_init (FpDeviceEgis0575Class *klass)
+{
+  FpDeviceClass *dev_class = FP_DEVICE_CLASS (klass);
+
+  dev_class->id = "egis0575";
+  dev_class->full_name = "LighTuning Technology Inc. EgisTec EH575";
+  dev_class->type = FP_DEVICE_TYPE_USB;
+  dev_class->id_table = id_table;
+  dev_class->scan_type = FP_SCAN_TYPE_PRESS;
+  dev_class->nr_enroll_stages = NCC_ENROLL_FRAMES;
+  dev_class->temp_hot_seconds = -1;
+
+  dev_class->open = dev_open;
+  dev_class->close = dev_close;
+  dev_class->cancel = dev_cancel;
+  dev_class->enroll = dev_enroll;
+  dev_class->verify = dev_verify;
+  dev_class->capture = dev_capture;
+
+  fpi_device_class_auto_initialize_features (dev_class);
+  dev_class->features &= ~FP_DEVICE_FEATURE_IDENTIFY;
+}
