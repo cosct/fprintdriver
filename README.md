@@ -16,8 +16,9 @@
 ## 目录结构
 
 ```
-docs/     protocol.md 线协议基准 · comparison.md 架构对比 ·
-          windows-engine-tables.md 引擎系数表提取笔记
+docs/     文档索引见 docs/README.md（中英双语）：
+          protocol 线协议基准 · comparison 架构对比与匹配器终局 ·
+          windows-engine-tables 引擎系数表提取与复刻
 scripts/  测试与数据采集工具（见下）
 tools/    评测小工具（egis0575-matcher-test / eval_bz3 / hwpoll）
 PKGBUILD  本地开发打包（AUR 版本见 AUR 仓库）
@@ -59,10 +60,14 @@ python3 scripts/analyze-columns.py datasets/press-test-*/
 
 ## 关键结论速查
 
-1. EH575 是**图像传感器**（103×52 小图、主机侧匹配），不是 match-on-chip
-2. swipe+Bozorth3（topni1 驱动）是精度差的根源；press 单帧 + NCC 画廊匹配
-   实测达到 KDE 解锁级
-3. 本驱动 = EH577 的 press+NCC 架构 + EH575 协议表 + Windows 引擎
-   matcher 移植（表提取方法见 `docs/windows-engine-tables.md`）
+1. EH575 是**图像传感器**（103×52 小图、主机侧匹配，**无死区列**），
+   不是 match-on-chip
+2. swipe+Bozorth3（topni1 驱动）是精度差的根源；经典匹配方案（NCC/
+   Bozorth3/POC/SigFM/方向场）在本传感器原始信噪比下**全部**无法区分
+   同人异指（实验数据见 docs/comparison.md §5）
+3. 本驱动 = EH577 的 press 采集架构 + topni1 校准初始化（EH575 出图
+   必要条件）+ **Windows 引擎 matcher 移植**（11 取向脊线滤波器组 +
+   512bit 描述子 + 海明/RANSAC 评分，系数实抽自 vendor DLL；离线
+   FRR/FAR 双 0%，真机集成验收通过）
 4. `01 01 01 → 重跑 PRE_INIT` 是 EH575 的本义错误处理
 5. topni1 源码有个 GCC14+ 致命笔误 `FPI_DEVICE_Egis0575`（已修，值得回报）
