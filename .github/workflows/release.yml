@@ -170,8 +170,10 @@ jobs:
           printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > aur.key
           export GIT_SSH_COMMAND="ssh -i $PWD/aur.key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
+          # 'help' is a real command in AUR's restricted shell: exit 0 only
+          # with valid auth (the Welcome banner only prints in no-command mode).
           if ! ssh -i aur.key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
-               aur@aur.archlinux.org true 2>&1 | grep -q 'Welcome to AUR'; then
+               aur@aur.archlinux.org help >/dev/null 2>&1; then
             echo "::error::AUR rejected the CI key. Add the public half of AUR_SSH_PRIVATE_KEY to your AUR account (My Account -> SSH keys)."
             exit 1
           fi
