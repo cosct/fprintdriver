@@ -180,7 +180,7 @@ jobs:
             exit 1
           fi
 
-          pacman -Syu --noconfirm --needed meson ninja gobject-introspection gtk-doc git \
+          pacman -Syu --noconfirm --needed openssh meson ninja gobject-introspection gtk-doc git \
             pacman-contrib systemd-libs libusb libgusb openssl pixman glib2 libgudev
           git clone ssh://aur@aur.archlinux.org/libfprint-egis0575.git aur
           cp research/packaging/aur/PKGBUILD aur/PKGBUILD
