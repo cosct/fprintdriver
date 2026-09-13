@@ -170,6 +170,12 @@ jobs:
           printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > aur.key
           export GIT_SSH_COMMAND="ssh -i $PWD/aur.key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
+          # openssh first: the preflight below needs the ssh binary
+          # (archlinux:base-devel ships neither git nor openssh)
+          pacman -Syu --noconfirm --needed openssh git \
+            pacman-contrib meson ninja gobject-introspection gtk-doc systemd-libs \
+            libusb libgusb openssl pixman glib2 libgudev
+
           # 'help' is a real command in AUR's restricted shell: exit 0 only
           # with valid auth (the Welcome banner only prints in no-command mode).
           ssh_out=$(ssh -i aur.key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
@@ -180,8 +186,6 @@ jobs:
             exit 1
           fi
 
-          pacman -Syu --noconfirm --needed openssh meson ninja gobject-introspection gtk-doc git \
-            pacman-contrib systemd-libs libusb libgusb openssl pixman glib2 libgudev
           git clone ssh://aur@aur.archlinux.org/libfprint-egis0575.git aur
           cp research/packaging/aur/PKGBUILD aur/PKGBUILD
           cd aur
