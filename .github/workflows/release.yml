@@ -74,7 +74,7 @@ jobs:
           apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
           # pin the tag tarball: build-deb.sh verifies this checksum on its
           # own download
-          SHA=$(curl -fsSL --retry 3 "https://github.com/cosct/libfprint-eh575/archive/refs/tags/egis0575-v$VER.tar.gz" | sha256sum | cut -d' ' -f1)
+          SHA=$(curl -fsSL --retry 3 "https://github.com/cosct/libfprint-egis0575/archive/refs/tags/egis0575-v$VER.tar.gz" | sha256sum | cut -d' ' -f1)
           test -n "$SHA"
           bash packaging/deb/build-deb.sh "$VER" "$SHA"
       - uses: actions/upload-artifact@v4
@@ -102,7 +102,7 @@ jobs:
       - name: Build package
         run: |
           mkdir -p sources
-          URL="https://github.com/cosct/libfprint-eh575/archive/refs/tags/egis0575-v$VER.tar.gz"
+          URL="https://github.com/cosct/libfprint-egis0575/archive/refs/tags/egis0575-v$VER.tar.gz"
           curl -fsSL --retry 3 -o "sources/egis0575-v$VER.tar.gz" "$URL"
           # verify the tarball against an independently re-downloaded copy
           EXPECTED=$(curl -fsSL --retry 3 "$URL" | sha256sum | cut -d' ' -f1)
@@ -138,9 +138,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create -R cosct/libfprint-eh575 "$TAG" --verify-tag --generate-notes \
+          gh release create -R cosct/libfprint-egis0575 "$TAG" --verify-tag --generate-notes \
             --title "egis0575 driver $VER" || true
-          gh release upload -R cosct/libfprint-eh575 "$TAG" ./*.pkg.tar.zst ./*.deb ./*.rpm --clobber
+          gh release upload -R cosct/libfprint-egis0575 "$TAG" ./*.pkg.tar.zst ./*.deb ./*.rpm --clobber
 
   aur:
     needs: [build-arch]

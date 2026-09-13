@@ -10,9 +10,9 @@ set -eu
 
 VER="${1:?usage: build-deb.sh <version> [sha256]}"
 TAG="egis0575-v$VER"
-# single-repo layout: tag tarballs come from the fprintdriver monorepo and
+# single-repo layout: tag tarballs come from the libfprint-egis0575 repository and
 # extract to fprintdriver-<tag>/ with the meson tree in libfprint/
-SRC="libfprint-eh575-$TAG"
+SRC="libfprint-egis0575-$TAG"
 # The deb version carries the bundled libfprint base so that
 # Provides: libfprint-2-2 (= $LFVER) stays Debian-policy-compliant
 # (provide <= own version) and satisfies fprintd's libfprint-2-2 (>= 1.9x).
@@ -26,7 +26,7 @@ apt-get install -y -qq --no-install-recommends \
 
 DEBARCH=$(dpkg-architecture -qDEB_HOST_ARCH)
 
-curl -fsSLO "https://github.com/cosct/libfprint-eh575/archive/refs/tags/$TAG.tar.gz"
+curl -fsSLO "https://github.com/cosct/libfprint-egis0575/archive/refs/tags/$TAG.tar.gz"
 if [ $# -ge 2 ]; then
   echo "$2  $TAG.tar.gz" | sha256sum -c -
 else

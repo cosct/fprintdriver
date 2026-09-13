@@ -13,7 +13,7 @@ Acer/Wortmann machines.
   512-bit descriptors, Hamming/RANSAC scoring; coefficients extracted from
   EgisTouchFPEngine0575.dll). See `libfprint/drivers/egis0575.c` header
   comment for details and the
-  [fprintdriver research repo](https://github.com/cosct/libfprint-eh575)
+  [fprintdriver research repo](https://github.com/cosct/libfprint-egis0575)
   for the full protocol analysis and matcher validation.
 - Status: works for KDE lock-screen / `fprintd` unlock on the developer's
   machine; tuning thresholds and feedback from other EH575 owners welcome

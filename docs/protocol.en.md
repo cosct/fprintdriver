@@ -4,7 +4,7 @@
 > the EH575 driver. All entries are cross-validated across four sources;
 > entries marked "verified on hardware" were confirmed in live sessions on
 > 2026-09-12/13. The driver ships from
-> [cosct/libfprint-eh575](https://github.com/cosct/libfprint-eh575)
+> [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)
 > (the `libfprint/` subtree) · AUR package `libfprint-egis0575`.
 > [中文版](protocol.md)
 

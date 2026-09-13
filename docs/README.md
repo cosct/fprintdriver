@@ -1,17 +1,41 @@
 # 文档索引 / Documentation Index
 
-研究已完成，驱动发布于 [cosct/libfprint-eh575](https://github.com/cosct/libfprint-eh575)（libfprint/ 子树）
-（AUR `libfprint-egis0575`）。每份文档提供中英双语：
+驱动随 [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575) 仓库分发
+（`libfprint/` 子树；AUR 同名包）。研究结论全部真机验证或源码可溯，
+开放项集中在 [comparison §9](comparison.md#9-遗留问题) 与
+[protocol §10](protocol.md#10-尚未逆向的部分)。
 
-| 文档 / Document | 中文 | English |
-|---|---|---|
-| USB 线协议基准 / USB wire protocol | [protocol.md](protocol.md) | [protocol.en.md](protocol.en.md) |
-| 架构对比与决策（含匹配器实验史与终局）/ Architecture comparison & decisions (incl. matcher history and endgame) | [comparison.md](comparison.md) | [comparison.en.md](comparison.en.md) |
-| Windows 引擎系数表提取与复刻 / Windows-engine coefficient extraction & replica | [windows-engine-tables.md](windows-engine-tables.md) | [windows-engine-tables.en.md](windows-engine-tables.en.md) |
-| Windows 端录入机制 / Windows-side enrollment mechanics | [windows-enrollment.md](windows-enrollment.md) | [windows-enrollment.en.md](windows-enrollment.en.md) |
-| 优化计划（工作文档，中文）/ Optimization plan (working doc, Chinese) | [optimization-plan.md](optimization-plan.md) | — |
+The driver ships from
+[cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)
+(the `libfprint/` subtree; same-named AUR package). Every conclusion is
+hardware-verified or source-traceable; open items live in
+[comparison §9](comparison.en.md#9-open-items) and
+[protocol §10](protocol.en.md#10-not-yet-reverse-engineered).
 
-阅读顺序建议 / Suggested reading order: protocol → comparison → windows-engine-tables.
+## 板块一：逆向研究 / Track 1: Reverse engineering
 
-All conclusions in these documents are hardware-verified or
-source-traceable; open items are listed in comparison.md §9.
+「传感器到底怎么工作、Windows 是怎么驱动它的」
+
+| 文档 / Document | 一句话 / In one line | 中文 | English |
+|---|---|---|---|
+| 线协议 / Wire protocol | CET300 命令集全表、初始化/采集序列、Windows 会话实序与已知陷阱 / The full CET300 command set, init & capture sequences, the actual Windows session order, known pitfalls | [protocol.md](protocol.md) | [protocol.en.md](protocol.en.md) |
+| 引擎系数提取 / Coefficient extraction | 从 vendor DLL 定位并提取 FIR/权重表的完整方法 / Locating and extracting the FIR/weight tables from the vendor DLL | [windows-engine-tables.md](windows-engine-tables.md) | [windows-engine-tables.en.md](windows-engine-tables.en.md) |
+| Windows 录入机制 / Enrollment mechanics | WBF 引擎适配器的采样数三层覆盖、逐帧三道门、20 个可调参数 / The WBF engine adapter's layered sample counts, per-frame gating, 20 tunables | [windows-enrollment.md](windows-enrollment.md) | [windows-enrollment.en.md](windows-enrollment.en.md) |
+
+## 板块二：驱动工程 / Track 2: Driver engineering
+
+「我们据此怎么造的驱动、为什么这样造」
+
+| 文档 / Document | 一句话 / In one line | 中文 | English |
+|---|---|---|---|
+| 架构对比与决策 / Comparison & decisions | 四实现对比、七个匹配方案失败史、Windows 引擎移植终局、稳定性工程 / Four-implementation comparison, the seven failed matchers, the endgame port, stability work | [comparison.md](comparison.md) | [comparison.en.md](comparison.en.md) |
+| 优化计划 / Optimization plan | 逆向结论 → 优化项的路线图与完成状态（工作文档）/ The reverse-engineering-to-optimization roadmap with status (working doc, Chinese) | [optimization-plan.md](optimization-plan.md) | — |
+| 阈值标定报告 / Threshold calibration | 录入相似拒绝阈值的语料分布证据 / The corpus distributions behind the enrollment similarity threshold | [enroll-sim-calibration.txt](enroll-sim-calibration.txt) | — |
+
+## 阅读顺序建议 / Suggested reading order
+
+- **想懂驱动为什么长这样** / to understand the driver:
+  protocol → comparison → windows-engine-tables
+- **想改/调优** / to hack or tune:
+  optimization-plan → comparison §6–§7 → 本仓库 README 的 env vars 一节
+- **只想装来用** / just installing: 仓库 README 的 Install 一节即可 / the Install section of the repo README is enough
