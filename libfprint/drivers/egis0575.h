@@ -296,6 +296,30 @@ static const Packet EGIS0575_POST_CALIBRATION_PACKETS[] = {
 #define EGIS0575_PRESENCE_MIN_INTENSITY 10
 #define EGIS0575_PRESENCE_MIN_RAW_FINGER_PIXELS 800
 
+/* Weak-press degradation heuristic (sensor-health watchdog): a real press
+ * pulls the raw finger-like count below this from the ~5356 idle baseline. */
+#define EGIS0575_WEAK_PRESS_MAX_RAW_PIXELS 5300
+
+/* A broken calibration read leaves a trailing run of this many identical
+ * bytes (topni1 measured 0x3f); checked at SM_CAL_CHECK. */
+#define EGIS0575_CAL_BROKEN_TAIL_RUN 100
+
+/* Consecutive timeout-driven claim recycles within one action before the
+ * sensor is declared wedged mid-action (a live sensor produces a frame
+ * within a couple of recycles, which resets the counter). */
+#define EGIS0575_TIMEOUT_RECOVERY_MAX 3
+
+/* The cancel watchdog re-checks the capture loop at this interval. */
+#define EGIS0575_CANCEL_WATCHDOG_MS 1000
+
+/* Deferred close: poll interval and retry cap while waiting for the capture
+ * loop to wind down before the interface is released. The shutdown chain is
+ * 9 packets × 2 transfers, each with a hard EGIS0575_TIMEOUT on a wedged
+ * sensor (~36 s worst case); the cap must cover that — releasing the
+ * interface with URBs in flight wedges the firmware (see dev_close). */
+#define EGIS0575_CLOSE_POLL_INTERVAL_MS 50
+#define EGIS0575_CLOSE_POLL_MAX_RETRIES 720
+
 /* USB commands time out after this many ms. */
 #define EGIS0575_TIMEOUT 2000
 
@@ -309,7 +333,7 @@ static const Packet EGIS0575_POST_CALIBRATION_PACKETS[] = {
  * Bound on frame reads per interface claim before recycling, as a wedge
  * safeguard.  EH577 measured ~8; EH575 (topni1 driver) polls hundreds of
  * frames within one claim without issue.  A low bound combined with the
- * calibration re-upload on recycle hammers the sensor (measured 1860
+ * calibration re-upload on recycle hammers the sensor (measured 1865
  * recycles in 3.5 min of idle polling -> firmware hang), so keep it loose.
  */
 #define EGIS0575_MAX_FRAMES_PER_CLAIM 200

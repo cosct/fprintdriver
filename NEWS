@@ -1,6 +1,16 @@
 This file lists notable changes in each release. For the full history of all
 changes, see ChangeLog.
 
+2026-09-13: egis0575 fork of v1.94.100
+
+Highlights:
+  * New egis0575 driver for the LighTuning/EgisTec EH575 (1c7a:0575) press
+    sensor: calibration-upload init sequence, press-snapshot capture with
+    background warm-up, bounded timeout/claim recycling and a sensor-health
+    watchdog, and a Windows-engine matcher port (11-orientation ridge
+    matched-filter bank, 512-bit descriptors, Hamming/translation-cluster
+    scoring) with a versioned feature-template format
+
 2026-07-25: v1.94.100 release
 
 Highlights:

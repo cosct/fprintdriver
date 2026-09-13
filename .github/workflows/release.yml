@@ -40,7 +40,7 @@ jobs:
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm --needed \
-            meson ninja gobject-introspection gtk-doc git systemd-libs glib2-devel \
+            meson ninja git systemd-libs pacman-contrib \
             libusb libgusb openssl pixman glib2 libgudev
       - name: Build package
         run: |
@@ -48,6 +48,9 @@ jobs:
           sed -i "s/^pkgver=.*/pkgver=$VER/; s/^pkgrel=.*/pkgrel=1/" PKGBUILD
           useradd -m builder
           chown -R builder: .
+          # the packaged sha256sums belongs to the previous tag's tarball;
+          # refresh it for this tag or makepkg fails the integrity check
+          sudo -u builder updpkgsums
           sudo -u builder makepkg -f --noconfirm
       - uses: actions/upload-artifact@v4
         with:
@@ -70,7 +73,11 @@ jobs:
           repository: cosct/fprintdriver
           path: research
       - name: Build package
-        run: bash research/packaging/deb/build-deb.sh "$VER"
+        run: |
+          # pin the tag tarball: build-deb.sh verifies this checksum on its
+          # own download
+          SHA=$(curl -fsSL --retry 3 "https://github.com/cosct/libfprint-egis0575/archive/refs/tags/egis0575-v$VER.tar.gz" | sha256sum | cut -d' ' -f1)
+          bash research/packaging/deb/build-deb.sh "$VER" "$SHA"
       - uses: actions/upload-artifact@v4
         with:
           name: deb-package
@@ -99,8 +106,11 @@ jobs:
       - name: Build package
         run: |
           mkdir -p sources
-          curl -fsSL --retry 3 -o "sources/egis0575-v$VER.tar.gz" \
-            "https://github.com/cosct/libfprint-egis0575/archive/refs/tags/egis0575-v$VER.tar.gz"
+          URL="https://github.com/cosct/libfprint-egis0575/archive/refs/tags/egis0575-v$VER.tar.gz"
+          curl -fsSL --retry 3 -o "sources/egis0575-v$VER.tar.gz" "$URL"
+          # verify the tarball against an independently re-downloaded copy
+          EXPECTED=$(curl -fsSL --retry 3 "$URL" | sha256sum | cut -d' ' -f1)
+          echo "$EXPECTED  sources/egis0575-v$VER.tar.gz" | sha256sum -c -
           rpmbuild -bb \
             --define "version $VER" \
             --define "_sourcedir $PWD/sources" \

@@ -29,3 +29,50 @@ jobs:
           # every driver's id_table, so it also exercises the terminator
           ./build/libfprint/fprint-list-supported-devices | grep -i '1c7a:0575' || \
             { echo 'egis0575 driver not registered'; exit 1; }
+
+      - name: Sanitizer regression on the egis0575 matcher
+        run: |
+          # Build the standalone matcher with ASan+UBSan and run extraction
+          # and scoring on a synthetic frame at the driver's accept-frame
+          # geometry (208x104). Guards against OOB/UB in the descriptor
+          # pipeline (the 4x4 sub-block weight indexing once overran the
+          # 11-entry pyramid arrays).
+          python3 - <<'PY'
+          import math
+          w, h = 208, 104
+          px = bytes(int(127 + 80 * math.sin(x * 0.35) * math.cos(y * 0.21)) & 0xff
+                     for y in range(h) for x in range(w))
+          open('/tmp/fp.pgm', 'wb').write(b'P5\n%d %d\n255\n' % (w, h) + px)
+          PY
+          cat > /tmp/mt_main.c <<'EOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include "libfprint/drivers/egis0575-matcher.h"
+
+          int
+          main (void)
+          {
+            FILE *f = fopen ("/tmp/fp.pgm", "rb");
+            int w, h, maxv;
+
+            if (!f || fscanf (f, "P5 %d %d %d", &w, &h, &maxv) != 3)
+              return 2;
+            fgetc (f);
+            unsigned char *img = malloc ((size_t) w * h);
+            if (!img || fread (img, 1, (size_t) w * h, f) != (size_t) w * h)
+              return 2;
+            fclose (f);
+
+            static Egis0575MFeatureSet fs;
+            egis0575_m_extract (img, w, h, &fs);
+            int votes = 0;
+            int score = egis0575_m_score (&fs, &fs, &votes);
+            printf ("sanitizer fixture: features=%d self-score=%d votes=%d\n",
+                    fs.n, score, votes);
+            free (img);
+            return 0;
+          }
+          EOF
+          cc -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -I. -o /tmp/mt_asan /tmp/mt_main.c libfprint/drivers/egis0575-matcher.c -lm
+          /tmp/mt_asan

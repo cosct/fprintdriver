@@ -1,8 +1,9 @@
 /*
  * EgisTec EH575 matcher: port of the Windows-engine replica validated in
- * the fprintdriver research project.  Copyright (C) 2026 cosct <cosct@outlook.com>
- * Python (scripts/egis_matcher.py) validated in
- * https://github.com/cosct/fprintdriver (docs/windows-engine-tables.md).
+ * the fprintdriver research project. The Python reference lives in
+ * scripts/egis_matcher.py; provenance of the extracted coefficients is
+ * documented in docs/windows-engine-tables.md, both at
+ * https://github.com/cosct/fprintdriver
  *
  * Pipeline: flat-field → 11-orientation ridge matched filter bank (taps
  * extracted from EgisTouchFPEngine0575.dll) → interest points on filter
@@ -12,8 +13,22 @@
  * Pure C, no GLib: also compiled into the standalone cross-validation
  * harness (tools/egis0575-matcher-test.c).
  *
+ * Copyright (C) 2026 cosct <cosct@outlook.com>
  * Copyright (C) 2026 fprintdriver research contributors
- * LGPL-2.1-or-later
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #pragma once
@@ -30,12 +45,18 @@
 #define EGIS0575_M_N_ORIENT 11
 
 /* Verdict thresholds. The C engine's descriptor bits differ slightly from
- * the Python reference (different interpolation path in the oriented
- * filter), so its score scale differs: validated on the same capture
- * corpus, genuine 6/6 scored 336-470 and impostors 0/12 scored 127-280
- * (https://github.com/cosct/fprintdriver/blob/master/docs/windows-engine-tables.md).
- * Threshold 300 splits with ≥20 margin. */
-#define EGIS0575_M_MATCH_THRESHOLD 300
+ * the Python reference (border handling of the flat-field mean plus the
+ * interpolation path in the oriented filter), so its score scale differs.
+ *
+ * Recalibrated 2026-09-13 on 23 verify-run datasets (125 probes) after the
+ * orientation-4 FIR kernel and tie-break fixes changed the score scale.
+ * Verdicts are run-level (up to 6 probes per press, any passing probe
+ * suffices): confident-genuine runs bottomed at a max probe score of 349,
+ * confident-impostor runs peaked at 288 (including ambiguous runs: 321).
+ * Threshold 335 sits at the midpoint of that gap; agree floor 150 × 2
+ * frames unchanged
+ * (https://github.com/cosct/fprintdriver/blob/master/docs/windows-engine-tables.md). */
+#define EGIS0575_M_MATCH_THRESHOLD 335
 #define EGIS0575_M_AGREE_SCORE 150
 #define EGIS0575_M_AGREE_FRAMES 2
 

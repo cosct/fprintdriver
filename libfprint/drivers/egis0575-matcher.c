@@ -2,7 +2,20 @@
  * EgisTec EH575 matcher (see egis0575-matcher.h for provenance).
  *
  * Copyright (C) 2026 cosct <cosct@outlook.com>
- * LGPL-2.1-or-later
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "egis0575-matcher.h"
@@ -11,13 +24,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* DLL 0x3ebd0: 11 symmetric ridge-template kernels (all sum 32768). */
+/* DLL RVA 0x3ffd0 (file offset 0x3ebd0): 11 ridge-template kernels, stored
+ * packed as i32 with lengths 5,5,5,7,7,7,9,9,9,11,11; all sum 32768.
+ * Orientation 4 is 7 taps in the DLL — an earlier extraction padded it to
+ * 9 with the previous kernel's edge tap (706); corrected 2026-09-13. */
 static const int fir_taps[EGIS0575_M_N_ORIENT][11] = {
   { 1785, 8003, 13193, 8002, 1785, 0, 0, 0, 0, 0, 0 },
   { 2319, 8011, 12109, 8010, 2319, 0, 0, 0, 0, 0, 0 },
   { 2806, 7951, 11253, 7952, 2806, 0, 0, 0, 0, 0, 0 },
   { 706, 3097, 7524, 10114, 7524, 3097, 706, 0, 0, 0, 0 },
-  { 706, 950, 3402, 7313, 9438, 7313, 3402, 950, 706, 0, 0 },
+  { 950, 3402, 7313, 9438, 7313, 3402, 950, 0, 0, 0, 0 },
   { 1200, 3646, 7104, 8870, 7102, 3646, 1200, 0, 0, 0, 0 },
   { 361, 1415, 3757, 6748, 8205, 6749, 3757, 1415, 361, 0, 0 },
   { 486, 1632, 3877, 6517, 7746, 6515, 3877, 1632, 486, 0, 0 },
@@ -25,7 +41,7 @@ static const int fir_taps[EGIS0575_M_N_ORIENT][11] = {
   { 216, 753, 1985, 3967, 6011, 6904, 6011, 3967, 1985, 753, 216 },
   { 289, 889, 2134, 3986, 5800, 6572, 5800, 3986, 2134, 889, 289 },
 };
-static const int fir_len[EGIS0575_M_N_ORIENT] = { 5, 5, 5, 7, 9, 7, 9, 9, 9, 11, 11 };
+static const int fir_len[EGIS0575_M_N_ORIENT] = { 5, 5, 5, 7, 7, 7, 9, 9, 9, 11, 11 };
 
 /* DLL 0x40130: 11-tap descriptor pyramid weight kernels (peaks 425/392). */
 static const double w_row[11] = { 57, 118, 207, 308, 392, 425, 392, 308, 207, 118, 57 };
@@ -56,8 +72,17 @@ clamp_sample (const double *img, int w, int h, double x, double y)
 static void
 flat_field (const uint8_t *img, int w, int h, double *out)
 {
+  /* the sensor geometry (≤ a few hundred px per side) keeps the integral
+   * image far below INT_MAX; the standalone harness feeds it the same
+   * sensor-sized PGMs */
   int *csum = calloc ((size_t) (w + 1) * (h + 1), sizeof (int));
   double mean_all = 0.0, sq_all = 0.0;
+
+  if (!csum)
+    {
+      memset (out, 0, sizeof (double) * w * h);
+      return;
+    }
 
   for (int y = 0; y < h; y++)
     for (int x = 0; x < w; x++)
@@ -65,7 +90,13 @@ flat_field (const uint8_t *img, int w, int h, double *out)
         img[y * w + x] + csum[y * (w + 1) + (x + 1)] +
         csum[(y + 1) * (w + 1) + x] - csum[y * (w + 1) + x];
 
-  /* 15x15 local mean with edge clamping (numpy edge-pad semantics) */
+  /* 15x15 local mean over the in-image part of the window: at the borders
+   * the window is clamped and the divisor is the clamped count. This is
+   * deliberately NOT the Python reference's np.pad(mode="edge") + fixed
+   * 225 divisor (which replicates border pixels instead); the C behaviour
+   * is the one the shipped thresholds were validated with, and the known
+   * C/Python border difference is tracked in the research repo docs
+   * (docs/comparison.md §6). */
   for (int y = 0; y < h; y++)
     {
       int y0 = y - 7, y1 = y + 8;
@@ -74,7 +105,7 @@ flat_field (const uint8_t *img, int w, int h, double *out)
         {
           int x0 = x - 7, x1 = x + 8;
           int xa = x0 < 0 ? 0 : x0, xb = x1 > w ? w : x1;
-          /* clamped window size (pad replicates border values) */
+          /* clamped window size: divide by the visible count, not 225 */
           int wh = (x1 > w ? w : x1) - (x0 < 0 ? 0 : x0);
           int wv = (y1 > h ? h : y1) - (y0 < 0 ? 0 : y0);
           int cnt = wh * wv;
@@ -88,7 +119,8 @@ flat_field (const uint8_t *img, int w, int h, double *out)
     }
 
   double n = (double) w * h;
-  double std = sqrt (sq_all / n - (mean_all / n) * (mean_all / n));
+  /* rounding can make the variance marginally negative */
+  double std = sqrt (fmax (sq_all / n - (mean_all / n) * (mean_all / n), 0.0));
   for (int i = 0; i < w * h; i++)
     out[i] /= (std + 1e-9);
 
@@ -138,14 +170,6 @@ oriented_bank (const double *flat, int w, int h,
     }
 }
 
-static int
-cmp_pts_desc (const void *a, const void *b)
-{
-  double da = *(const double *) a;
-  double db = *(const double *) b;
-  return (da < db) - (da > db);
-}
-
 static void
 pack_descriptor (const double *vals /* 512 */, uint8_t *out)
 {
@@ -164,13 +188,32 @@ void
 egis0575_m_extract (const uint8_t *img, int w, int h,
                     Egis0575MFeatureSet *out)
 {
-  double *flat = malloc (sizeof (double) * w * h);
-  double *enh = malloc (sizeof (double) * w * h);
-  double *gx = malloc (sizeof (double) * w * h);
-  double *gy = malloc (sizeof (double) * w * h);
-  uint8_t *oidx = malloc (w * h);
+  double *flat, *enh, *gx, *gy;
+  uint8_t *oidx;
 
   out->n = 0;
+
+  /* interest points scan with a 6px margin and the descriptor needs an
+   * 11px window; smaller inputs cannot yield features */
+  if (w < 13 || h < 13)
+    return;
+
+  flat = malloc (sizeof (double) * w * h);
+  enh = malloc (sizeof (double) * w * h);
+  gx = malloc (sizeof (double) * w * h);
+  gy = malloc (sizeof (double) * w * h);
+  oidx = malloc ((size_t) w * h);
+
+  if (!flat || !enh || !gx || !gy || !oidx)
+    {
+      free (flat);
+      free (enh);
+      free (gx);
+      free (gy);
+      free (oidx);
+      return;
+    }
+
   flat_field (img, w, h, flat);
   oriented_bank (flat, w, h, enh, oidx);
 
@@ -190,6 +233,14 @@ egis0575_m_extract (const uint8_t *img, int w, int h,
   double *pvals = malloc (sizeof (double) * cap);
   int npts = 0;
 
+  if (!pxs || !pys || !pvals)
+    {
+      free (pxs);
+      free (pys);
+      free (pvals);
+      goto out;
+    }
+
   for (int y = 6; y < h - 6; y++)
     for (int x = 6; x < w - 6; x++)
       {
@@ -201,7 +252,10 @@ egis0575_m_extract (const uint8_t *img, int w, int h,
               m = enh[(y + dy) * w + x + dx];
         if (m > v)
           continue;
-        /* strict centre winner on ties (numpy argmax==4 semantics) */
+        /* strict centre winner on ties (numpy argmax==4 semantics): the
+         * centre stays only if every equal-valued neighbour comes later in
+         * row-major scan order, i.e. its (dy,dx) offset indexes past the
+         * centre: (dy+1)*3+(dx+1) > 4  <=>  dy*3+dx > 0. */
         if (m == v)
           {
             int strict = 1;
@@ -211,7 +265,7 @@ egis0575_m_extract (const uint8_t *img, int w, int h,
                   if (dx == 0 && dy == 0)
                     continue;
                   if (enh[(y + dy) * w + x + dx] == v &&
-                      (dy * 3 + dx) < 4)
+                      (dy * 3 + dx) < 0)
                     { strict = 0; break; }
                 }
             if (!strict)
@@ -230,7 +284,9 @@ egis0575_m_extract (const uint8_t *img, int w, int h,
   {
     /* insertion-sort index pairs is O(n²) worst; use simple approach with
      * qsort on packed (val, x, y) via index array */
-    int *idx = malloc (sizeof (int) * npts);
+    int *idx = malloc (sizeof (int) * (npts > 0 ? npts : 1));
+    if (!idx)
+      goto out_free_pts;
     for (int i = 0; i < npts; i++)
       idx[i] = i;
     /* selection of top-K by value with NMS: sort indices by value desc */
@@ -270,8 +326,13 @@ egis0575_m_extract (const uint8_t *img, int w, int h,
         for (int dy = 0; dy < 4; dy++)
           for (int dx = 0; dx < 4; dx++)
             {
-              int r0 = 2 * dy + (dy > 1), r1 = r0 + 5;
-              int c0 = 2 * dx + (dx > 1), c1 = c0 + 5;
+              /* 4×4 sub-blocks with 5px windows over the 11×11 pyramid; the
+               * last sub-block overruns (7:12) and numpy slicing silently
+               * truncates it to 7:11 in the reference — clamp the same way
+               * (w_row/w_col have exactly EGIS0575_M_N_ORIENT entries).
+               * (no GLib MIN here: this file is pure C) */
+              int r0 = 2 * dy + (dy > 1), r1 = r0 + 5 > EGIS0575_M_N_ORIENT ? EGIS0575_M_N_ORIENT : r0 + 5;
+              int c0 = 2 * dx + (dx > 1), c1 = c0 + 5 > EGIS0575_M_N_ORIENT ? EGIS0575_M_N_ORIENT : c0 + 5;
               for (int yy = r0; yy < r1; yy++)
                 for (int xx = c0; xx < c1; xx++)
                   {
@@ -297,9 +358,11 @@ egis0575_m_extract (const uint8_t *img, int w, int h,
     free (idx);
   }
 
+out_free_pts:
   free (pxs);
   free (pys);
   free (pvals);
+out:
   free (flat);
   free (enh);
   free (gx);
@@ -310,6 +373,7 @@ egis0575_m_extract (const uint8_t *img, int w, int h,
 static inline int
 hamming512 (const uint8_t *a, const uint8_t *b)
 {
+  /* __builtin_popcountll is GCC/Clang-only; libfprint requires one of those */
   int d = 0;
   for (int i = 0; i < EGIS0575_M_DESC_BYTES; i += 8)
     {
@@ -436,9 +500,11 @@ egis0575_m_score (const Egis0575MFeatureSet *probe,
   if (good < EGIS0575_M_MIN_MATCHED)
     return 0;
 
-  /* unexplained-feature penalty (second-chance NN) */
+  /* unexplained-feature penalty (second-chance NN); features with no
+   * plausible NN at all (best_j < 0, every distance exactly 512) are
+   * skipped, matching the Python reference's bj<0 drop */
   for (int i = 0; i < n1; i++)
-    if (best_h[i] > 256)
+    if (best_j[i] >= 0 && best_h[i] > 256)
       score -= best_h[i] / 2;
 
   if (votes_out)
