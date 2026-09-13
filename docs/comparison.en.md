@@ -35,7 +35,7 @@ engine matcher (§6).
 ## 3. Mechanisms ported from EH577 (all shipped)
 
 ### Capture (one complete fresh cycle per poll)
-- PRE_INIT(29) → POST_INIT(17) with trailing `64 14 ec` frame read; the
+- PRE_INIT(29) → POST_INIT(18) with trailing `64 14 ec` frame read; the
   calibration driver replaces this with the calibration flow
   (protocol.md §4A), keeping POST_INIT semantics as the error-retry path
 - Claim recycling: on reaching the budget, release + re-claim the interface
@@ -49,17 +49,19 @@ engine matcher (§6).
   fingers (a deadlock trap)
 - Rolling baseline: recent "no-finger" frames keep overwriting it;
   refresh gate std<10 (EH577's raw<200 gate is always false on EH575)
-- Criteria: dual coverage/intensity gates after background subtraction
-  (18%/10 presence, 25%/20 usable; validated with a clean margin on the
-  EH575 dataset, see protocol.md §6)
+- Criteria: three gates after background subtraction (coverage ≥18% AND
+  intensity ≥10 AND raw_finger_pixels ≥800 for presence; validated with a
+  clean margin on the EH575 dataset, see protocol.md §6)
 
 ### Per-touch (turn) state machine
 - 400 ms settle (evaluate only after the finger settles); 1400 ms turn
   timeout (a single press never polls forever)
 - Frames passing the quality gate are submitted immediately (fast exit);
-  otherwise keep the "best frame" (fewest saturated pixels)
-- After each accepted enrollment frame, an 800 ms re-arm lockout (forces
-  a genuine lift)
+  failing frames are simply discarded and retried within the turn window
+  until it times out
+- After each accepted enrollment frame the waiting_for_lift state bit is
+  set; re-arming happens only on a detected genuine lift (event-driven
+  lockout, not a timer)
 - Phantom-presence recovery: unconditional 4-second stuck-presence watchdog
 
 ### Image pipeline (in order)
@@ -133,32 +135,46 @@ GLib, independently testable).
    (52% cross-press geometric repeatability)
 3. 512-bit top-tier descriptor: 4×4 regions × 32 orientation bins, DLL
    pyramid weights, main orientation = winning filter orientation
-4. Hamming nearest neighbor (budget 115/512, no Lowe) → translation-cluster
-   RANSAC → angle-mode voting
+4. Hamming nearest neighbor (budget 115/512, no Lowe) → translation
+   clustering (match offsets bucketed at 8 px, mode vote — not iterative
+   RANSAC) → angle-mode voting
 5. Windows scoring Σ(128−hamming) − unmatched-feature penalty (h/2)
 6. **Dual-frame gallery agreement** (defeats position-specific accidental
    alignments)
 
-### Validation numbers
+### Validation numbers (evidence-strength caveat at the end of this section)
 - **Offline** (Python replica; verdict = single-frame best ≥244 AND ≥2
   gallery frames agreeing ≥150): genuine A/C all pass, impostor A/C all
   rejected (including a 438-score impostor killed by the 1-frame agreement
   rule) — FRR 0% (6/6), FAR 0% (0/12)
 - **C-port calibration**: the C engine's descriptor bits differ slightly
-  from the Python reference (different interpolation path in the oriented
-  filter), so the score scale differs — on the same corpus genuine 6/6
-  scored 336–470, impostors 0/12 scored 127–280; **threshold 300 splits
-  with ≥20 margin**
-- **On-hardware integration acceptance** (2026-09-13): right index ×3 =
-  622/404/381, all MATCH (early-exit verdict ~2 s); left-index impostor =
-  285, correctly rejected (15 below threshold — worth retuning with more
-  data or tightening the agree rule later)
+  from the Python reference (flat-field border handling plus the
+  interpolation path in the oriented filter), so the score scale differs.
+  **Recalibrated 2026-09-13** (after the orientation-4 kernel and
+  tie-break fixes; 23 verify-run datasets, 125 probes, run-level best
+  single-frame score): confident-genuine runs bottomed at 349,
+  confident-impostor runs peaked at 288 (321 including ambiguous runs) →
+  **threshold 335 (gap midpoint)**, agreement ≥2 frames × ≥150 unchanged.
+  (Pre-fix engine: genuine 336–470 / impostor 127–280 / threshold 300 —
+  superseded.)
+- **On-hardware integration acceptance** (2026-09-13, pre-fix engine + v0
+  templates): right index ×3 = 622/404/381, all MATCH (early-exit verdict
+  ~2 s); left-index impostor = 285, correctly rejected. Must be re-run with
+  the fixed engine and v1 templates (orientation restored) after
+  re-enrollment
 - **System level** (full fprintd chain): `probes=1 best_score=1086/300
   => MATCH`
 
+**Evidence strength**: the numbers above are a small-sample, single-machine
+validation — 6 genuine press sets / 12 impostor comparisons, threshold
+tuned on the same corpus, one EH575 unit; no held-out set, no multi-device
+coverage, no FAR@FRR/EER curves. Read them as "passed a small-sample
+check", not as a statistical FRR/FAR claim. Wider evaluation (with
+de-identified test vectors and the eval scripts) is open item §9.
+
 ### Differences from the original Windows engine
 The original uses threshold 660 (adaptive −80/+60, capped at 1.5×); this
-driver uses a fixed 300 plus dual-frame agreement (2 frames × ≥150)
+driver uses a fixed 335 plus dual-frame agreement (2 frames × ≥150)
 because the C port's score scale differs. The adaptive threshold and the
 verification-time template feedback (encrypted registry blob 'AE') were
 not ported.
@@ -192,16 +208,19 @@ not ported.
 
 ## 8. Upstream issues found
 
-- topni1 `egis0575.c:782` typo `FPI_DEVICE_Egis0575` (should be
-  `EGIS0575`): only a warning on GCC ≤13, an error on GCC 14+.
-  **To be reported to the topni1 fork.**
+- (Retracted after verification) topni1's `egis0575.c` was recorded here
+  as containing the typo `FPI_DEVICE_Egis0575` (should be all-caps
+  `FPI_DEVICE_EGIS0575`). Re-checked 2026-09-13: grepping every commit in
+  that fork's history finds no such string and the current code is
+  correct — the earlier record was mistaken; nothing to report.
 
 ## 9. Open items
 
 1. Whether identify (1:N) can be enabled safely — gallery-size limit
    untested
-2. Impostor separation margin is only 15 points (285 vs 300) — widen the
-   dataset to retune, or tighten the agree rule
+2. Impostor separation margin after recalibration is 47 points
+   (confident-impostor peak 288 vs threshold 335; four ambiguous runs
+   peaking at 321 remain unlabeled) — keep widening the dataset
 3. Automatic USBDEVFS_RESET for hard frame-read hangs (2 s timeouts don't
    even fire, SIGINT chain dead — §7 item 7); the desensitization watchdog
    is already in-driver (§7 item 8), only this extreme case still needs the

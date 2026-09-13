@@ -25,13 +25,14 @@ NBINS = 32                  # 方向 bin 数（11.25°/bin，atan2 LUT 级精度
 
 W11 = None                  # 11x11 金字塔权重（从 DLL 提取的 11 抽头核外积）
 
-# DLL 0x3ebd0 提取的 11 个对称核（全部正系数，和=32768）= 取向脊线模板
+# DLL RVA 0x3ffd0 提取的 11 个对称核（全部正系数，和=32768）= 取向脊线模板
+# 取向4 在 DLL 中是 7 抽头（早前提取误补成 9 抽头，2026-09-13 更正）
 FIR_BANK = [
     (1785, 8003, 13193, 8002, 1785),
     (2319, 8011, 12109, 8010, 2319),
     (2806, 7951, 11253, 7952, 2806),
     (706, 3097, 7524, 10114, 7524, 3097, 706),
-    (706, 950, 3402, 7313, 9438, 7313, 3402, 950, 706),
+    (950, 3402, 7313, 9438, 7313, 3402, 950),
     (1200, 3646, 7104, 8870, 7102, 3646, 1200),
     (361, 1415, 3757, 6748, 8205, 6749, 3757, 1415, 361),
     (486, 1632, 3877, 6517, 7746, 6515, 3877, 1632, 486),
@@ -82,19 +83,34 @@ def build_weights():
 def load_pgm(p):
     d = p.read_bytes()
     pos, tok = 0, []
+    # 头：4 个 token（P5 w h maxval），支持 '#' 注释行
     while len(tok) < 4:
         while pos < len(d) and d[pos:pos+1].isspace():
             pos += 1
+        if pos < len(d) and d[pos:pos+1] == b"#":
+            while pos < len(d) and d[pos:pos+1] != b"\n":
+                pos += 1
+            continue
         s = pos
         while pos < len(d) and not d[pos:pos+1].isspace():
             pos += 1
         tok.append(d[s:pos])
-    pos += 1
+    if d[pos:pos + 2] == b"\r\n":
+        pos += 2  # maxval 后的空白终止符，容忍 CRLF 头
+    else:
+        pos += 1
+    if tok[0] != b"P5" or int(tok[3]) != 255:
+        raise ValueError(f"{p}: 不是 8-bit PGM (P5/255)")
     w, h = int(tok[1]), int(tok[2])
-    return np.frombuffer(d[pos:pos+w*h], np.uint8, w*h).reshape(h, w).astype(np.float64)
+    if w <= 0 or h <= 0:
+        raise ValueError(f"{p}: 非法尺寸 {w}x{h}")
+    raster = d[pos:pos + w * h]
+    if len(raster) < w * h:
+        raise ValueError(f"{p}: 像素数据不足（期望 {w*h}，实得 {len(raster)}）")
+    return np.frombuffer(raster, np.uint8, w * h).reshape(h, w).astype(np.float64)
 
 def preprocess(img):
-    """平场近似（当前最佳变体；FIR 取向滤波待实现，见 docs/windows-engine-tables.md）。"""
+    """平场归一化（减 15x15 局部均值，边缘 replicate）。"""
     from numpy.lib.stride_tricks import sliding_window_view
     pad = np.pad(img, 7, mode="edge")
     win = sliding_window_view(pad, (15, 15))
@@ -154,46 +170,6 @@ def extract_features(img):
 def popcount_hamming(a, b):
     return np.count_nonzero(a != b)
 
-def match_feats(f1, f2):
-    """海明 NN + Lowe + 位移空间聚类(RANSAC) + 角度众数投票。返回一致票数。"""
-    if len(f1) < MIN_MATCHED or len(f2) < MIN_MATCHED:
-        return 0
-    pairs = []
-    for x1, y1, a1, d1 in f1:
-        best, bj = 512, -1
-        for j, (x2, y2, a2, d2) in enumerate(f2):
-            h = popcount_hamming(d1, d2)
-            if h < best:
-                best, bj = h, j
-        if bj >= 0 and best <= HAMMING_BUDGET:
-            pairs.append(((x1, y1, a1), f2[bj]))
-    if len(pairs) < MIN_MATCHED:
-        return 0
-
-    # 位移空间 2D 直方图（8px bin），取最大簇
-    from collections import Counter
-    votes2 = Counter()
-    for (x1, y1, a1), f2f in pairs:
-        votes2[((x1 - f2f[0]) // 8, (y1 - f2f[1]) // 8)] += 1
-    (cbx, cby), _ = votes2.most_common(1)[0]
-    cx, cy = cbx * 8 + 4, cby * 8 + 4
-    inliers = [((x1, y1, a1), f2f) for (x1, y1, a1), f2f in pairs
-               if abs((x1 - f2f[0]) - cx) <= POS_TOL_PX
-               and abs((y1 - f2f[1]) - cy) <= POS_TOL_PX]
-    if len(inliers) < MIN_MATCHED:
-        return 0
-
-    # 角度差众数（圆周），容差内计票
-    dangs = Counter()
-    for (x1, y1, a1), f2f in inliers:
-        da = (a1 - f2f[2]) % 360
-        dangs[da] += 1
-    mode_ang = dangs.most_common(1)[0][0]
-    votes = sum(1 for (x1, y1, a1), f2f in inliers
-                if min((a1 - f2f[2] - mode_ang) % 360,
-                       360 - (a1 - f2f[2] - mode_ang) % 360) <= ANGLE_TOL_DEG)
-    return votes
-
 def match_score(f1, f2):
     """Windows 风格评分：Σ(128−h) 簇内贡献 − 未解释特征惩罚(−h/2)。"""
     if len(f1) < MIN_MATCHED or len(f2) < MIN_MATCHED:
@@ -205,7 +181,11 @@ def match_score(f1, f2):
             h = popcount_hamming(d1, d2)
             if h < best:
                 best, bj = h, j
+        if bj < 0:
+            continue  # 全部描述子等距（如全同）：无可信 NN
         nn.append(((x1, y1, a1), f2[bj], best))
+    if len(nn) < MIN_MATCHED:
+        return 0, 0
 
     from collections import Counter
     votes2 = Counter()
@@ -230,7 +210,6 @@ def match_score(f1, f2):
         return 0, 0
     score = sum(128 - h for _, _, h in good)
     # 二次机会惩罚：NN 海明 > 256 的 probe 特征未被画廊解释
-    used = {id(f2f) for _, f2f, _ in good}
     for p, f2f, h in nn:
         if h > 256:
             score -= h // 2
@@ -241,7 +220,8 @@ def main():
     ap.add_argument("gallery_dir", type=pathlib.Path)
     ap.add_argument("probe_dir", type=pathlib.Path)
     ap.add_argument("--threshold", type=int, default=244,
-                    help="单帧画廊分数阈值（实测：真min254/假max438→配合双帧一致）")
+                    help="单帧画廊分数阈值（实测：真min254/假max438→配合双帧一致；"
+                         "注意与 C 引擎刻度不同，驱动阈值为 300）")
     ap.add_argument("--agree", type=int, default=150,
                     help="一致判定的单帧分数下限")
     args = ap.parse_args()

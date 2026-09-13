@@ -23,6 +23,7 @@ bf = cv2.BFMatcher_create()
 
 
 def load_pgm(path):
+    """读 8-bit PGM；容忍单行/多行头、'#' 注释与 CRLF，校验像素数。"""
     data = path.read_bytes()
     pos, tokens = 0, []
     while len(tokens) < 4:
@@ -36,9 +37,17 @@ def load_pgm(path):
         while pos < len(data) and not data[pos:pos + 1].isspace():
             pos += 1
         tokens.append(data[s:pos])
-    pos += 1
+    if data[pos:pos + 2] == b"\r\n":
+        pos += 2  # maxval 后的空白终止符，容忍 CRLF 头
+    else:
+        pos += 1
+    if tokens[0] != b"P5" or int(tokens[3]) != 255:
+        raise ValueError(f"不是 8-bit PGM (P5/255): {path}")
     w, h = int(tokens[1]), int(tokens[2])
-    img = np.frombuffer(data[pos:pos + w * h], np.uint8, w * h).reshape(h, w)
+    raster = data[pos:pos + w * h]
+    if w <= 0 or h <= 0 or len(raster) < w * h:
+        raise ValueError(f"PGM 尺寸非法或数据不足: {path}")
+    img = np.frombuffer(raster, np.uint8, w * h).reshape(h, w)
     return img
 
 
@@ -89,8 +98,11 @@ def sigfm_score(img1, img2, invert=False):
         for j in range(i + 1, len(angles)):
             s1, c1 = angles[i]
             s2, c2 = angles[j]
-            if (1 - min(s1, s2) / max(s1, s2) <= ANGLE_MATCH and
-                    1 - min(c1, c2) / max(c1, c2) <= ANGLE_MATCH):
+            ms, mc = max(s1, s2), max(c1, c2)
+            if ms == 0 or mc == 0:
+                continue  # 严格反平行向量对退化出的零角度，无投票意义
+            if (1 - min(s1, s2) / ms <= ANGLE_MATCH and
+                    1 - min(c1, c2) / mc <= ANGLE_MATCH):
                 count += 1
     return count, len(pts)
 

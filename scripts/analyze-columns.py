@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""EH575 死区列验证（docs/comparison.md §6 开放问题 1）。
+"""EH575 死区列验证（docs/comparison.md §6，原开放问题 1，已定案）。
 
-EH577 固件在 103 列帧的右侧 33 列恒回硬零（有效区 70×52）。EH575 是否
-同样存在死区未知。本脚本统计采集到的原始帧（5356 字节 .bin）每列的
-非零率与方差，给出有效宽度建议，供 EGIS0575_ACTIVE_WIDTH 使用。
+EH577 固件在 103 列帧的右侧 33 列恒回硬零（有效区 70×52）。EH575 经
+本脚本验证为 103 列全活跃、无死区（已定案）。对新机型复核时统计采集
+到的原始帧（5356 字节 .bin）每列的非零率与方差，给出有效宽度建议，
+供 EGIS0575_ACTIVE_WIDTH 使用。
 
 用法：python3 scripts/analyze-columns.py datasets/<name>-<stamp>[/raw]
 """

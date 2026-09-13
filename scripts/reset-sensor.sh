@@ -5,13 +5,16 @@
 
 set -euo pipefail
 
-NODE=$(lsusb | grep -i "1c7a:0575" | awk '{print "/dev/bus/usb/" $2 "/" $4}' | tr -d ':' | head -1)
+# grep 无匹配时退出码为 1；pipefail 下必须 || true，否则设备不在时
+# 脚本会在下面的友好提示之前就死了（这正是最需要提示的场景）。
+MATCHES=$(lsusb | grep -i "1c7a:0575" || true)
+# lsusb 总线/设备号带冒号（如 003 003），格式化路径
+NODE=$(printf '%s' "$MATCHES" | awk 'NR==1 {print "/dev/bus/usb/" $2 "/" $4}' | tr -d ':')
 
 if [[ -z "$NODE" || ! -c "$NODE" ]]; then
-  # lsusb 总线/设备号带冒号（如 003 003），格式化路径
-  BUS=$(lsusb | grep -i "1c7a:0575" | awk '{print $2}')
-  DEV=$(lsusb | grep -i "1c7a:0575" | awk '{print $4}' | tr -d ':')
-  NODE="/dev/bus/usb/$BUS/$DEV"
+  echo "✗ 未找到可复位的设备：lsusb 中没有 1c7a:0575（NODE='$NODE'）"
+  echo "  请确认传感器在位；若刚执行过复位，等几秒重试"
+  exit 1
 fi
 
 echo "复位 $NODE ..."

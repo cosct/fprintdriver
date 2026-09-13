@@ -26,19 +26,42 @@ implementation).
 ## 2. Command and response format
 
 - Commands start with ASCII `EGIS` (`45 47 49 53`) followed by
-  "register-style" bytes:
-  - `60 xx` — status/query
-  - `61 xx vv` — register write
-  - `62 67 03` / `63 …` (9–18 bytes) — multi-byte parameter blocks
-  - `71 …` — parameter block (seen in PRE_FIRST_IMAGE / POST_REPEAT)
-  - `97 00 00` — sensor reset (3rd packet of topni1's PRE_RESET)
+  "register-style" bytes (the CET300 command set; semantics settled
+  2026-09-13 from the v3.7.1.1 UMDF driver EgisTouchFP0575.dll
+  decompilation cross-checked against the 2021 on-hardware pcaps):
+  - `60 aa` — single-byte register read / status query (data in `resp[5]`;
+    this is the polling mechanism)
+  - `61 aa vv` — single-byte register write (`61 0a/0b/0c` are AGC/exposure;
+    values are computed at runtime)
+  - `62 aa nn data` — register block write (data inline, length nn)
+  - `63 aa nn …` — register block read / parameter block (9–18 bytes)
+  - `71 …` — **detect-mode parameter block**: `71 45 06 00 XX 87 13 00 03`
+    appears after the AGC register writes and right before the `60 01`
+    finger-poll loop starts (the DLL's SetDetectModeParameters; byte 5 XX
+    is a dynamic intensity value from et5xx_fetch_dynamic_intensity —
+    measured 0xb9/0xbe across sessions on the same machine); the short
+    block `71 02 02 01 0c` sits on the re-arm (POST_REPEAT) path
+  - `72 hh ll` — **block read** (hh ll = big-endian byte count):
+    `72 14 ec` reads 5356 bytes
+  - `73 hh ll` — **block write** (hh ll = big-endian byte count):
+    `73 14 ec` announces a 5356-byte write; the 7-byte response is the
+    block-write header ack, then the host sends the data and receives a
+    7-byte confirmation. **Not calibration-specific** — the short response
+    of `73 14 ec` inside EH577's PRE_INIT has exactly this meaning (former
+    §10 open item, resolved)
+  - `97 00 00` — sensor reset (response must be `SIGE` with status byte
+    == 1); Windows sends it only on the recovery path (once, in the
+    vmware-5 session)
+  - Present in the v3.7.1.1 DLL but never on the wire in the 2021 pcaps
+    (version difference or spare paths): `80 sub nn` / `81 hh ll`
+    (256-byte-granularity block reads), `90 00`, `98 00` (write-only),
+    `99 01/02/04` (inline block-write variants sent as one transfer)
 - Responses start with `SIGE` (`53 49 47 45`) and mirror the command length
   (exceptions below)
 - Notable exception commands:
   - `64 14 ec` → read one image frame, **5356 bytes** (103×52)
   - `72 14 ec` → read the calibration block, **5356 bytes**
-  - `73 14 ec` → enter calibration-upload mode (7-byte short response),
-    after which the host directly writes 5356 bytes of calibration data
+  - `73 14 ec` → block-write header (see above)
 - Response status byte: for most commands `resp[5]` carries a
   status/progress value (see the polls in §4)
 - Known erratum: the response to `63 01 02 0f 03` is **9 bytes** (topni1's
@@ -55,9 +78,11 @@ implementation).
 - Pixel polarity: fingerprint images use `FPI_IMAGE_COLORS_INVERTED`
 - EH575 empty-frame signature: the full frame carries low-intensity content
   (all 5356 pixels in the 15–150 gray range), completely unlike EH577's
-  "no-finger frame has only ~173 active pixels". Raw-finger-pixel style
-  criteria have no discriminating power on EH575; **coverage after
-  warm-background subtraction is the only working presence criterion** (§6)
+  "no-finger frame has only ~173 active pixels". The discriminating signal
+  is coverage after warm-background subtraction; the raw-finger-pixel count
+  serves only as a sanity floor (empty frames sit at ~5356 and a press
+  *reduces* it — <5300 also feeds the health watchdog's weak-press
+  heuristic). See §6 for the three-gate criterion
 
 ## 4. Initialization sequences
 
@@ -85,7 +110,7 @@ B. Reset + upload calibration
 ### B. PRE_INIT/POST_INIT flow (EH577's route; **does not work** on EH575)
 
 The Animeshz/championswimmer alternative: PRE_INIT (29 packets) →
-POST_INIT (17 packets + frame). EH575 semantics: when POST_INIT[1]
+POST_INIT (18 packets + frame). EH575 semantics: when POST_INIT[1]
 (`60 01 fc`) answers `SIGE 01 01 01`, the device is asking for
 pre-initialization — jump back and re-run PRE_INIT (this is EH575's
 intended error handling).
@@ -100,6 +125,38 @@ verified: sending bare `73 14 ec` (without the 5356-byte payload) yields a
 second. In the driver, route B is kept only behind
 `EGIS0575_SKIP_CALIBRATION=1` for A/B experiments. The Python
 implementation has a third equivalent sequence (8-packet rearm).
+
+### C. Actual Windows session order (2026-09-13 pcap review, vmware-1 lockscreen session)
+
+A complete Windows session init is just **8 commands plus the 5356-byte
+calibration upload**, then it enters the frame loop — **it does not run
+route A's calibration chain (PHASE_1/3/5), never reads calibration (72
+count: 0 in all sessions), and never resets (97 appears once, in a
+recovery scenario)**:
+
+```
+1  60 00 00 / 60 01 00          wake-up probe
+2  61 0a f4 / 61 0c 44 / 61 50 03   AGC/exposure registers (dynamic values)
+3  73 14 ec + 5356 B OUT        upload the [cached] calibration block (once per session)
+4  60 40 ec                     poll until the upload is digested
+5  63 09 0b 83 24 … / 63 26 06 06 …  parameter blocks (frame-loop config)
+6  61 23/24/20/21 …             four register writes
+7  → REPEAT frame loop (632c→602d→6267→600f→632c→6000→64 14 ec)
+```
+
+**The truth about calibration persistence (former §10 open item,
+resolved)**: Windows persists the 5356-byte calibration block **host-side**
+(an EgisFP registry/database cache) and uploads it with `73 14 ec` every
+session — the sensor NVM is not involved, there is no "burn" command, and
+the 72 read count is 0 across all ten pcap sessions. After power-up the
+sensor firmware runs its own built-in calibration (corroborated by the
+DLL's strings: fp_tz_secure_pre_calibrate, tz_calibrate_dvr,
+et5xx_calibrate_bad_pixel, Zone1/Zone2 bad-pixel statistics,
+vdm hw/target mean); topni1's route A simply reads that result out (72)
+and feeds it back explicitly. Our driver is topni1-shaped (fresh read and
+upload per open); caching the block host-side with an invalidation policy
+(reread on sensor-health-watchdog triggers) would match Windows' session
+start speed — an optional optimization, not a correctness issue.
 
 ## 5. Capture loop
 
@@ -121,11 +178,14 @@ implementation has a third equivalent sequence (8-packet rearm).
 - Software criteria, compared:
   - topni1: mean squared adjacent-pixel difference in the open interval
     (100, 1000)
-  - championswimmer (adopted by this driver): after warm-background
-    subtraction, coverage ≥18% and intensity ≥10 (presence); ≥25%/≥20
-    (usable). Validated on an EH575 dataset: empty frames peaked at 17%
-    coverage vs finger frames bottoming at 19% — a clean margin
-    (56 finger / 450 empty frames)
+  - championswimmer (adopted by this driver): a three-gate presence test
+    after warm-background subtraction — coverage ≥18% AND intensity ≥10
+    AND raw_finger_pixels ≥800 (EGIS0575_PRESENCE_MIN_*, egis0575.h).
+    Validated on an EH575 dataset: empty frames peaked at 17% coverage vs
+    finger frames bottoming at 19% — a clean margin (56 finger / 450 empty
+    frames). Frame *usability* is a separate Stage-2 quality gate (after
+    median denoise + stretch5: grain <6%, 0<minutiae<10, ridge >4000 —
+    see the Stage-2 comment block in egis0575.h)
   - python: np.std > 31.0
 
 ## 7. Windows online behavior, observed (2026-09-13, vmware-0.pcap, 57 s session)
@@ -178,14 +238,28 @@ windows-engine-tables.md for the matcher and its threshold calibration).
 
 ## 10. Not yet reverse-engineered
 
-- The semantics of `73 14 ec` answering only a 7-byte short response in
-  the EH577 PRE_INIT context
-- The calibration-data persistence protocol (Windows behavior with
-  storage; mentioned in topni1's comments)
-- Register semantics of `71 …` / `97 00 00`
+As of 2026-09-13 the three former open items are resolved (see the §2
+command table and §4C): `73 14 ec` = generic block-write header
+(length-parameterized); calibration persistence = host-side cache +
+per-session 73 upload (no sensor-side burn); `71 …` = detect-mode
+parameter block (with a dynamic intensity value), `97 00 00` = reset
+(ack status byte must be 1).
+
+Current open items:
+- The `80`/`81`/`90`/`98`/`99 xx` command family exists in the v3.7.1.1
+  DLL but never appeared in the 2021 pcaps — semantics inferred from the
+  decompilation (§2), on-hardware behavior unobserved
+- The register address map (0x2d/0x35/0x40/0x50/0x67/0x0a/0x0b/0x0c …)
+  remains a black box: behavior known, hardware meaning unknown; would
+  need the unpublished CET300 datasheet
+- The internal layout of the 5356-byte calibration block (Zone1/Zone2
+  bad-pixel tables + VDM mean parameters, inferred from DLL strings) —
+  treating it as an opaque blob is sufficient for us
 
 (The interrupt-endpoint 0x83/0x84 question was answered by §7: Windows
-does not use them.)
+does not use them; the DLL contains EGIS_WAIT_INTERRUPT /
+EGIS_TZ_STATE_NOTIFY_FINGER_DOWN strings, presumably firmware
+capabilities of non-USB variants or left unenabled.)
 
 ## Reference implementation index
 

@@ -22,7 +22,9 @@ BuildRequires:  systemd-devel openssl-devel libgudev-devel
 Provides:       libfprint = %{lfver}
 Provides:       libfprint%{?_isa} = %{lfver}
 Provides:       libfprint-2.so.2()(64bit)
-Conflicts:      libfprint
+Conflicts:      libfprint%{?_isa}
+# the package also ships the libfprint headers/pkgconfig files
+Conflicts:      libfprint-devel%{?_isa}
 
 %description
 libfprint plus the egis0575 press-snapshot driver with a Windows-engine
@@ -33,16 +35,26 @@ Replaces the distribution libfprint for devices that need this driver.
 %setup -q -n libfprint-egis0575-egis0575-v%{drvver}
 
 %build
+# udev_hwdb=enabled: meson's auto mode drops the autosuspend hwdb when
+# systemd >= 248 ships one, but systemd's list lacks the out-of-tree EH575.
 %meson -D introspection=false -D doc=false -D installed-tests=false \
   -D gtk-examples=false \
-  -D udev_rules_dir=/usr/lib/udev/rules.d -D udev_hwdb_dir=/usr/lib/udev/hwdb.d
+  -D udev_rules_dir=/usr/lib/udev/rules.d \
+  -D udev_hwdb=enabled -D udev_hwdb_dir=/usr/lib/udev/hwdb.d
 %meson_build
 
 %install
 %meson_install
 
-%post -p /sbin/ldconfig
-%postun -p /sbin/ldconfig
+%post
+/sbin/ldconfig
+# apply the udev rules and rebuild the hwdb database right away
+udevadm control --reload || :
+udevadm hwdb --update || :
+
+%postun
+/sbin/ldconfig
+udevadm hwdb --update || :
 
 %files
 %license COPYING

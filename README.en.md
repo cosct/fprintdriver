@@ -13,7 +13,10 @@ that can be submitted to
 - **Driver works**: press capture architecture + Windows-engine matcher
   port, verified on real hardware (KDE lock screen / fprintd / Bitwarden
   polkit unlock). Matcher validation numbers in `docs/comparison.en.md`
-  §6 (offline FRR/FAR both 0%, on-hardware threshold margin ≥20)
+  §6 (small-sample, single-machine validation: offline 6-genuine /
+  12-impostor FRR/FAR 0%, offline threshold margin ≥20, on-hardware
+  impostor separation margin 15 — evidence-strength caveat at the end of
+  that section)
 - **Driver source**:
   [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)
   (upstream libfprint + the `egis0575` driver, branch `egis0575`,
@@ -22,6 +25,10 @@ that can be submitted to
   (`yay -S libfprint-egis0575`)
 - **Todo**: collect feedback from more EH575 machines to tune
   thresholds; prepare the upstreamable patch series
+- **Upgrade note**: v0.2.0 template serialization dropped the orientation
+  field that scoring depends on, so prints enrolled with v0.2.0 cannot
+  verify on the new driver — after upgrading, run `fprintd-delete` and
+  re-enroll
 
 ## Repository layout
 
@@ -32,7 +39,7 @@ docs/     Index in docs/README.md (bilingual): protocol wire-protocol
 scripts/  Test and data-collection tooling (see below)
 tools/    Evaluation utilities (egis0575-matcher-test / eval_bz3 / hwpoll)
 packaging/ Release recipes: aur/PKGBUILD (canonical AUR copy) ·
-          deb/build-deb.sh · rpm/egis0575.spec — invoked by the fork
+          deb/build-deb.sh · rpm/libfprint-egis0575.spec — invoked by the fork
           repo's release workflow on egis0575-v* tags; artifacts are
           attached to the GitHub Release and the AUR package is updated
           automatically
@@ -85,10 +92,23 @@ Driver tunables (environment variables):
   no dead zone — kept for experiments)
 - `EGIS0575_SKIP_CALIBRATION=1` — skip calibration upload and use the
   EH577-style init (known to produce all-zero frames; A/B testing only)
-- `EGIS0575_PGM_DEBUG_DIR` / `_LOG` / `_INTERVAL_MS` — PGM dataset capture
+- `EGIS0575_PGM_DEBUG_DIR` / `_LOG` / `_INTERVAL_MS` / `_CONTROL` — PGM
+  dataset capture (in capture mode the driver keeps dumping processed
+  frames and enroll/verify actions never complete — stateless probing
+  only; the `_CONTROL` file can pause/resume capture)
 - `EGIS0575_FRAME_DUMP_DIR` — raw 5356-byte frame dumps
 - `EGIS0575_LIVE_FRAME_PATH` — live frame written to a single PGM
+- `EGIS0575_VERIFY_DUMP_DIR` — dump verify-time probes and gallery
+  feature counts (offline matcher analysis)
 - `EGIS0575_DISABLE_STRETCH=1` — disable stretch5 contrast enhancement
+- `EGIS0575_DEBUG_MAX_FILES` — file cap for PGM/raw-frame dumps (default
+  5000, ≈26 MB of raw frames; all debug sinks are written 0600 into 0700
+  dirs since they hold biometric data)
+
+Python-script dependencies are listed in `requirements.txt` (Python ≥ 3.9
++ numpy; eval_sigfm also needs OpenCV, hwpoll needs pyusb). This
+repository (docs/scripts/tools) is licensed LGPL-2.1-or-later like the
+driver (see `LICENSE`).
 
 ## Key findings at a glance
 
@@ -101,9 +121,10 @@ Driver tunables (environment variables):
 3. This driver = EH577's press capture architecture + topni1's
    calibration init (a hard requirement for imaging on EH575) + the
    **Windows-engine matcher port** (11-orientation ridge matched-filter
-   bank, 512-bit descriptors, Hamming/RANSAC scoring, with coefficients
-   extracted from the vendor DLL; offline FRR/FAR both 0%, on-hardware
-   integration accepted)
+   bank, 512-bit descriptors, Hamming/translation-cluster scoring, with
+   coefficients extracted from the vendor DLL; small-sample offline
+   FRR/FAR 0%, on-hardware integration accepted)
 4. `01 01 01 → re-run PRE_INIT` is EH575's intended error handling
-5. topni1's source has a GCC14+ fatal typo `FPI_DEVICE_Egis0575` (fixed
-   here; worth reporting upstream to that fork)
+5. The topni1 `FPI_DEVICE_Egis0575` typo recorded earlier was re-checked
+   across that fork's whole history and **does not exist** (see
+   docs/comparison.en.md §8); nothing to report

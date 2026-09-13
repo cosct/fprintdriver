@@ -20,3 +20,6 @@ pkg/
 __pycache__/
 tools/egis0575-matcher-test
 tools/eval_bz3
+
+# ZCode/会话状态文件（本机工具产物）
+thinking-effort-loaded.json

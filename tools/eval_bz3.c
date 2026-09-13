@@ -50,34 +50,79 @@ cmp_x_y (const void *a, const void *b)
   return 0;
 }
 
+/* Read one header token, skipping whitespace and '#' comment lines. */
+static int
+pgm_next_token (FILE *f, char *buf, size_t len)
+{
+  int c;
+
+  for (;;)
+    {
+      c = fgetc (f);
+      if (c == EOF)
+        return 0;
+      if (c == '#')
+        {
+          while (c != EOF && c != '\n')
+            c = fgetc (f);
+          continue;
+        }
+      if (c != ' ' && c != '\t' && c != '\r' && c != '\n')
+        break;
+    }
+
+  size_t n = 0;
+  while (c != EOF && c != ' ' && c != '\t' && c != '\r' && c != '\n' && c != '#')
+    {
+      if (n + 1 < len)
+        buf[n++] = (char) c;
+      c = fgetc (f);
+    }
+  if (c != EOF)
+    ungetc (c, f);  /* leave the terminator for the caller (CRLF handling) */
+  buf[n] = '\0';
+  return n > 0;
+}
+
 static unsigned char *
 load_pgm (const char *path, int *w, int *h)
 {
   FILE *f = fopen (path, "rb");
-  char  magic[8];
-  int   maxval;
+  char  tok[32];
 
   if (!f)
     return NULL;
 
-  /* handle both single-line ("P5 W H 255\n", driver) and multi-line
-   * ("P5\nW H\n255\n", PIL) headers */
-  if (fscanf (f, "%7s", magic) != 1 || strcmp (magic, "P5") != 0)
+  /* handle single-line ("P5 W H 255\n", driver), multi-line
+   * ("P5\nW H\n255\n", PIL) and comment-carrying headers */
+  if (!pgm_next_token (f, tok, sizeof (tok)) || strcmp (tok, "P5") != 0)
     {
       fclose (f);
       return NULL;
     }
 
-  if (fscanf (f, "%d %d %d", w, h, &maxval) != 3)
+  int maxval;
+  if (!pgm_next_token (f, tok, sizeof (tok)) || (*w = atoi (tok)) <= 0 ||
+      !pgm_next_token (f, tok, sizeof (tok)) || (*h = atoi (tok)) <= 0 ||
+      !pgm_next_token (f, tok, sizeof (tok)) || (maxval = atoi (tok)) != 255)
     {
       fclose (f);
       return NULL;
     }
+  /* consume the single whitespace terminator after maxval (tolerate CRLF) */
+  {
+    int t = fgetc (f);
+    if (t == '\r')
+      {
+        int t2 = fgetc (f);
+        if (t2 != '\n')
+          ungetc (t2, f);
+      }
+  }
 
-  fgetc (f);        /* single whitespace before raster */
-
-  unsigned char *data = malloc ((size_t) * w * *h);
-  if (fread (data, 1, (size_t) * w * *h, f) != (size_t) (* w * *h))
+  size_t npix = (size_t) *w * *h;
+  unsigned char *data = malloc (npix);
+  if (!data || fread (data, 1, npix, f) != npix)
     {
       free (data);
       fclose (f);
@@ -102,6 +147,8 @@ image_to_xyt (Img *img, struct xyt_struct *xyt)
   struct minutiae_struct c[MAX_FILE_MINUTIAE];
 
   lfsparms = malloc (sizeof (LFSPARMS));
+  if (!lfsparms)
+    return -1;
   memcpy (lfsparms, &g_lfsparms_V2, sizeof (LFSPARMS));
   lfsparms->remove_perimeter_pts = FALSE;
 
@@ -123,7 +170,10 @@ image_to_xyt (Img *img, struct xyt_struct *xyt)
   if (r || !minutiae)
     return -1;
 
+  /* c[] is sized by MAX_FILE_MINUTIAE; keep the Bozorth cap below it */
   nmin = minutiae->num < MAX_BOZORTH_MINUTIAE ? minutiae->num : MAX_BOZORTH_MINUTIAE;
+  if (nmin > MAX_FILE_MINUTIAE)
+    nmin = MAX_FILE_MINUTIAE;
 
   for (i = 0; i < nmin; i++)
     {

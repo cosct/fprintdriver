@@ -2,11 +2,13 @@
 # Build a .deb of libfprint + the egis0575 driver from a release tag.
 #
 # Runs inside a Debian container; installs build deps itself:
-#   ./build-deb.sh <version>            # e.g. ./build-deb.sh 0.2.0
-# Produces libfprint-egis0575_<libfprint-base>+egis0575.<version>-1_amd64.deb.
+#   ./build-deb.sh <version> [sha256]   # e.g. ./build-deb.sh 0.2.0 806c0f11...
+# Produces libfprint-egis0575_<libfprint-base>+egis0575.<version>-1_${DEBARCH}.deb.
+# The optional sha256 is checked against the downloaded tag tarball; passing
+# it (from the release notes / AUR PKGBUILD) is strongly recommended.
 set -eu
 
-VER="${1:?usage: build-deb.sh <version>}"
+VER="${1:?usage: build-deb.sh <version> [sha256]}"
 TAG="egis0575-v$VER"
 SRC="libfprint-egis0575-$TAG"
 # The deb version carries the bundled libfprint base so that
@@ -17,15 +19,25 @@ FULLVER="$LFVER+egis0575.$VER"
 
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
-  build-essential meson ninja-build ca-certificates curl xz-utils \
+  build-essential meson ninja-build ca-certificates curl xz-utils dpkg-dev \
   libglib2.0-dev libgusb-dev libpixman-1-dev libusb-1.0-0-dev libudev-dev libssl-dev libgudev-1.0-dev
 
+DEBARCH=$(dpkg-architecture -qDEB_HOST_ARCH)
+
 curl -fsSLO "https://github.com/cosct/libfprint-egis0575/archive/refs/tags/$TAG.tar.gz"
+if [ $# -ge 2 ]; then
+  echo "$2  $TAG.tar.gz" | sha256sum -c -
+else
+  echo "warning: no sha256 given as \$2 — the source tarball is UNVERIFIED" >&2
+fi
 tar xf "$TAG.tar.gz"
 
 meson setup "$SRC/build" "$SRC" --prefix=/usr -D introspection=false -D doc=false \
   -D installed-tests=false -D gtk-examples=false \
-  -D udev_rules_dir=/usr/lib/udev/rules.d -D udev_hwdb_dir=/usr/lib/udev/hwdb.d
+  -D udev_rules_dir=/usr/lib/udev/rules.d \
+  -D udev_hwdb=enabled -D udev_hwdb_dir=/usr/lib/udev/hwdb.d
+# udev_hwdb=enabled: meson's auto mode drops the autosuspend hwdb when
+# systemd >= 248 ships one, but systemd's list lacks the out-of-tree EH575.
 meson compile -C "$SRC/build"
 DESTDIR="$PWD/stage" meson install -C "$SRC/build"
 
@@ -35,12 +47,12 @@ Package: libfprint-egis0575
 Version: $FULLVER-1
 Section: libs
 Priority: optional
-Architecture: amd64
+Architecture: $DEBARCH
 Maintainer: cosct <cosct@outlook.com>
 Depends: libglib2.0-0, libgusb2, libpixman-1-0, libusb-1.0-0, libgudev-1.0-0, libssl3 | libssl3t64
 Provides: libfprint-2-2 (= $LFVER)
-Conflicts: libfprint-2-2
-Replaces: libfprint-2-2
+Conflicts: libfprint-2-2, libfprint-2-dev
+Replaces: libfprint-2-2, libfprint-2-dev
 Description: libfprint with the experimental EgisTec EH575 (1c7a:0575) driver
  libfprint plus the egis0575 press-snapshot driver with a Windows-engine
  matcher port, for the EgisTec EH575 (1c7a:0575) fingerprint sensor.
@@ -48,6 +60,24 @@ Description: libfprint with the experimental EgisTec EH575 (1c7a:0575) driver
 EOF
 # refresh the dynamic-linker cache after install/upgrade/removal
 echo "activate-noawait ldconfig" > stage/DEBIAN/triggers
+# apply the udev rules and rebuild the hwdb database right away (the
+# ldconfig trigger alone leaves /etc/udev/hwdb.bin stale until some other
+# package happens to refresh it)
+cat > stage/DEBIAN/postinst <<'EOF'
+#!/bin/sh
+set -e
+udevadm control --reload || true
+udevadm hwdb --update || true
+EOF
+chmod 755 stage/DEBIAN/postinst
+# removal drops our rules.d/hwdb files; refresh udev state there too
+cat > stage/DEBIAN/postrm <<'EOF'
+#!/bin/sh
+set -e
+udevadm control --reload || true
+udevadm hwdb --update || true
+EOF
+chmod 755 stage/DEBIAN/postrm
 
-dpkg-deb --build --root-owner-group stage "libfprint-egis0575_${FULLVER}-1_amd64.deb"
-echo "built: libfprint-egis0575_${FULLVER}-1_amd64.deb"
+dpkg-deb --build --root-owner-group stage "libfprint-egis0575_${FULLVER}-1_${DEBARCH}.deb"
+echo "built: libfprint-egis0575_${FULLVER}-1_${DEBARCH}.deb"

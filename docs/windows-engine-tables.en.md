@@ -26,10 +26,10 @@
 |---|---|---|
 | sin table, 360×int32 Q16 | 0x3eac0 | all 360 entries match sin(i°)×65536 (tolerance 8) |
 | cos table, 360×int32 Q16 | 0x3f060 | same; exactly 1440 bytes after sin |
-| **Ridge FIR taps (13-tap symmetric bandpass)** | ~0x400f0 | (753,216,289,889,2134,3986,5800,6572,5800,…,289), peak 6572 |
+| ~~Ridge FIR taps (13-tap symmetric bandpass)~~ | ~~0x400f0~~ | (superseded by the 0x3ffd0 entry below: this was a straddling misread of the orientation-9/10 kernels, peak 6572) |
 | **Descriptor weight kernels (pyramid)** | 0x40130+ | 2× 9-tap + 4× 11-tap symmetric kernels (peaks 118/207/308/392/425); 121 values match the 11×11 descriptor |
-| **11-orientation ridge-template kernels** (5→11 taps, all-positive, normalized sum 32768) | 0x3ebd0 | shipped in the driver's `egis0575-matcher.c` (fir_taps/fir_len) |
-| **atan2 LUT (monotonic u16)** | 0x40320 | strictly monotonic 0→210; code applies `720−x` + rounded-division indexing |
+| **11-orientation ridge-template kernels** (lengths 5,5,5,7,7,7,9,9,9,11,11 packed i32, normalized sum 32768) | RVA 0x3ffd0 (= file offset 0x3ebd0) | shipped in the driver's `egis0575-matcher.c` (fir_taps/fir_len); orientation 4 is 7 taps (an earlier extraction wrongly padded it to 9 — corrected 2026-09-13) |
+| **atan2 LUT (monotonic u16)** | 0x40320 | strictly monotonic 0→358 (128 entries); code applies `720−x` + rounded-division indexing |
 | Sensor config table | 0x47794 | contains 88/52/103 = normalized height / sensor height / width |
 
 ## 3. Key code sites (located via resynchronized disassembly)
@@ -52,11 +52,11 @@ falsified (interest points collapsed, genuine/impostor inverted).
 |---|---|---|---|
 | 32-bit + Lowe + median | 0 | — | descriptor too weak |
 | 128-bit + Lowe + median | 0-1 | — | Lowe kills true pairs (neighbors too similar) |
-| 128-bit, no Lowe + RANSAC clustering | 5,3,3 | 0,3,5 | first signal |
+| 128-bit, no Lowe + translation-bucket clustering | 5,3,3 | 0,3,5 | first signal |
 | 256-bit (16 bins) | 3,2,2 | 3,2,3 | finer bins unstable (SNR limit) |
 | + axial FIR smoothing | 0 | 3-4 | falsified (axial ≠ orientation) |
 | **+ 11-orientation filter bank** | **9,7,8 / 5 / 7,7,6** | 3-7 | votes still overlap |
-| + weighted score Σ(budget−h) | mean 156 (min 107) | mean 86 (max 137) | **1.8× separation, still overlapping** |
+| + weighted score Σ(128−h) | mean 156 (min 107) | mean 86 (max 137) | **1.8× separation, still overlapping** |
 
 Methodology takeaways: capstone desync-resync; no Lowe in
 weak-descriptor regimes; votes don't discriminate — use weighted scores.
@@ -70,8 +70,8 @@ Interest-point geometric repeatability of 52% proved the pipeline healthy.
    cross-press repeatability)
 3. 512-bit top-tier descriptor: 4×4 regions × 32 orientation bins, DLL
    pyramid weights, main orientation = winning filter orientation
-4. Hamming NN (budget 115/512, no Lowe) → translation-cluster RANSAC →
-   angle-mode voting
+4. Hamming NN (budget 115/512, no Lowe) → translation clustering
+   (8-px buckets, mode vote — not iterative RANSAC) → angle-mode voting
 5. Windows scoring Σ(128−h) − unmatched-feature penalty (h/2)
 6. Dual-frame gallery agreement (defeats position-specific accidental
    alignments)
@@ -94,12 +94,18 @@ agreement, naturally filtered by the dual condition.
 
 - **Score-scale difference**: the C engine's descriptor bits differ
   slightly from the Python reference (different interpolation path in the
-  oriented filter); on the same corpus genuine 6/6 scored **336–470** and
-  impostors 0/12 scored **127–280** → threshold **300** (≥20 margin),
-  agreement = **≥2 frames × ≥150**
-- **On-hardware integration** (early hours of 2026-09-13): right index ×3
-  = 622/404/381, all MATCH (early-exit verdict ~2 s); left-index impostor
-  = 285, correctly rejected (15 below threshold)
+  oriented filter). **Recalibrated 2026-09-13** (after the orientation-4
+  kernel fix, tie-break fix and weight-index clamp; 23 verify-run datasets,
+  125 probes, run-level best single-frame score): confident-genuine runs
+  bottomed at **349**, confident-impostor runs peaked at **288** (321
+  including ambiguous runs) → threshold **335** (gap midpoint), agreement
+  **≥2 frames × ≥150** unchanged. (Superseded pre-fix numbers: genuine
+  336–470 / impostor 127–280 / threshold 300.)
+- **On-hardware integration** (early hours of 2026-09-13, pre-fix engine
+  + v0 templates): right index ×3 = 622/404/381, all MATCH (early-exit
+  verdict ~2 s); left-index impostor = 285, correctly rejected. These were
+  measured with the pre-fix engine and v0 templates (orientation lost on
+  reload) and must be re-validated with re-enrollment
 - **System level** (full fprintd chain, 00:39): `probes=1
   best_score=1086/300 => MATCH`, coverage 51%
 - Not ported from the original Windows engine: the adaptive threshold-660

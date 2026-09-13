@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 系统级替换：打包并安装 libfprint-egis0575-experimental（含 EH575 驱动）。
+# 系统级替换：打包并安装 libfprint-egis0575（含 EH575 驱动）。
 # 会在安装步骤要 sudo 密码。回退方法见脚本尾注释。
 set -euo pipefail
 cd "$(dirname "$0")/.."

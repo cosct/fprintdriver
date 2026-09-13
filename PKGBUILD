@@ -19,11 +19,12 @@ license=(LGPL-2.1-or-later)
 # vendored libfprint builds all drivers by default: uru4000 needs openssl
 # at build time and links libssl/libcrypto at runtime; nothing needs nss.
 depends=(libusb libgusb openssl pixman glib2 libgudev)
-makedepends=(meson ninja git gobject-introspection gtk-doc)
+makedepends=(meson ninja)
 # 1.94.100 = bundled libfprint base; soversion 2 -> libfprint-2.so=2-64
 provides=(libfprint=1.94.100 libfprint-2.so=2-64)
 conflicts=(libfprint libfprint-egis-0575 libfprint-egis0575-experimental)
 replaces=(libfprint-egis-0575 libfprint-egis0575-experimental)
+# keep debug symbols in this local research build (the AUR package strips)
 options=(!strip)
 
 prepare() {
@@ -33,7 +34,15 @@ prepare() {
 }
 
 build() {
-  arch-meson libfprint build
+  # align with the deb/rpm builds: no docs, introspection or installed tests.
+  # udev_hwdb=enabled: meson's auto mode skips the autosuspend hwdb when
+  # systemd >= 248 ships one, but systemd's list lacks the out-of-tree
+  # EH575 — install ours (intentional duplicate, meson warns).
+  arch-meson libfprint build \
+    -D introspection=false -D doc=false -D installed-tests=false \
+    -D gtk-examples=false \
+    -D udev_rules_dir=/usr/lib/udev/rules.d \
+    -D udev_hwdb=enabled -D udev_hwdb_dir=/usr/lib/udev/hwdb.d
   meson compile -C build
 }
 
