@@ -10,7 +10,7 @@
 #   makepkg -f -i
 
 pkgname=libfprint-egis0575
-pkgver=0.2.1
+pkgver=0.2.2
 pkgrel=1
 pkgdesc="EgisTec EH575 (1c7a:0575) fingerprint driver on current libfprint (fprintdriver research build)"
 arch=(x86_64)

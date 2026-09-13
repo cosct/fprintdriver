@@ -1,7 +1,7 @@
 # libfprint + the experimental EgisTec EH575 (1c7a:0575) driver.
 # Research project: https://github.com/cosct/libfprint-egis0575
 # Release CI builds this spec with --define "version <driver-version>".
-%define drvver %{?version}%{!?version:0.2.1}
+%define drvver %{?version}%{!?version:0.2.2}
 %define debug_package %{nil}
 # libfprint base bundled with the driver (root meson.build version:)
 %define lfver 1.94.100
@@ -71,6 +71,9 @@ udevadm hwdb --update || :
 %{_datadir}/metainfo/org.freedesktop.libfprint.metainfo.xml
 
 %changelog
+* Sun Sep 13 2026 cosct-ci <cosct@outlook.com> - 0.2.2-1
+- Released via the release workflow (tag egis0575-v0.2.2).
+
 * Sun Sep 13 2026 cosct <cosct@outlook.com> - 0.2.1-1
 - v0.2.1: enrollment same-spot rejection (threshold 650), host-side
   calibration cache surviving close, two-tier idle polling.
