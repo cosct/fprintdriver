@@ -196,12 +196,11 @@ jobs:
           sudo -u builder updpkgsums
           sudo -u builder makepkg --printsrcinfo > .SRCINFO
           echo "=== diagnose: user=$(whoami) cwd=$PWD"
-          ls -A | head -5
-          ls .git >/dev/null 2>&1 && echo ".git 目录内容: $(ls .git | head -3 | tr '
-' ' ')" || echo ".git 不存在"
-          env | grep -E '^GIT_' || echo 无GIT_环境变量
-          git config --global --list 2>/dev/null | head -3 || echo 无全局配置
-          git status 2>&1 | head -2
+          ls -A
+          ls .git | head -3
+          env | grep -E "^GIT_" || echo "no GIT_ env"
+          git config --global --list 2>/dev/null | head -3 || echo "no global config"
+          git status 2>&1 | head -3
           if git diff --quiet; then
             echo "AUR package already at $VER; nothing to push."
           else
