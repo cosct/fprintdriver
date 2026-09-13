@@ -172,9 +172,11 @@ jobs:
 
           # 'help' is a real command in AUR's restricted shell: exit 0 only
           # with valid auth (the Welcome banner only prints in no-command mode).
-          if ! ssh -i aur.key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
-               aur@aur.archlinux.org help >/dev/null 2>&1; then
-            echo "::error::AUR rejected the CI key. Add the public half of AUR_SSH_PRIVATE_KEY to your AUR account (My Account -> SSH keys)."
+          ssh_out=$(ssh -i aur.key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+               aur@aur.archlinux.org help 2>&1) || ssh_rc=$?
+          if [ -n "${ssh_rc:-}" ]; then
+            echo "ssh preflight output: $ssh_out"
+            echo "::error::AUR ssh preflight failed (rc=$ssh_rc). If the output says Permission denied, the public half of AUR_SSH_PRIVATE_KEY is not registered in the AUR account (My Account -> SSH keys)."
             exit 1
           fi
 
