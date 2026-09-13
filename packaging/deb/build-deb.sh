@@ -10,7 +10,9 @@ set -eu
 
 VER="${1:?usage: build-deb.sh <version> [sha256]}"
 TAG="egis0575-v$VER"
-SRC="libfprint-egis0575-$TAG"
+# single-repo layout: tag tarballs come from the fprintdriver monorepo and
+# extract to fprintdriver-<tag>/ with the meson tree in libfprint/
+SRC="fprintdriver-$TAG"
 # The deb version carries the bundled libfprint base so that
 # Provides: libfprint-2-2 (= $LFVER) stays Debian-policy-compliant
 # (provide <= own version) and satisfies fprintd's libfprint-2-2 (>= 1.9x).
@@ -24,7 +26,7 @@ apt-get install -y -qq --no-install-recommends \
 
 DEBARCH=$(dpkg-architecture -qDEB_HOST_ARCH)
 
-curl -fsSLO "https://github.com/cosct/libfprint-egis0575/archive/refs/tags/$TAG.tar.gz"
+curl -fsSLO "https://github.com/cosct/fprintdriver/archive/refs/tags/$TAG.tar.gz"
 if [ $# -ge 2 ]; then
   echo "$2  $TAG.tar.gz" | sha256sum -c -
 else
@@ -32,7 +34,7 @@ else
 fi
 tar xf "$TAG.tar.gz"
 
-meson setup "$SRC/build" "$SRC" --prefix=/usr -D introspection=false -D doc=false \
+meson setup "$SRC/build" "$SRC/libfprint" --prefix=/usr -D introspection=false -D doc=false \
   -D installed-tests=false -D gtk-examples=false \
   -D udev_rules_dir=/usr/lib/udev/rules.d \
   -D udev_hwdb=enabled -D udev_hwdb_dir=/usr/lib/udev/hwdb.d

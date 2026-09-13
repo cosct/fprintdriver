@@ -3,9 +3,9 @@
 > **Status: settled.** This document is the protocol baseline used to develop
 > the EH575 driver. All entries are cross-validated across four sources;
 > entries marked "verified on hardware" were confirmed in live sessions on
-> 2026-09-12/13. The driver is published:
-> [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)
-> (branch `egis0575`) · AUR package `libfprint-egis0575`.
+> 2026-09-12/13. The driver ships from
+> [cosct/fprintdriver](https://github.com/cosct/fprintdriver)
+> (the `libfprint/` subtree) · AUR package `libfprint-egis0575`.
 > [中文版](protocol.md)
 
 Four-source cross-validation: the topni1 fork (hardware-verified), the
@@ -200,10 +200,12 @@ start speed — an optional optimization, not a correctness issue.
 Conclusion: Windows keeps the sensor healthy via a **duty cycle below
 0.1%** (full-speed capture only for a few seconds while the auth UI is
 active). fprintd semantics require continuous finger-state reporting, so
-"don't babysit" cannot be copied. This driver's adaptation: slow 230 ms
-frame polling (~7% duty cycle) + the in-driver sensor-health watchdog
+"don't babysit" cannot be copied. This driver's adaptation: two-tier slow
+frame polling (230 ms / ~7% duty after finger activity, dropping to
+500 ms / ~3% after 30 s of quiet) + the in-driver sensor-health watchdog
 (10-minute prophylactic re-init + weak-press degradation detection that
-automatically re-runs the calibration chain); hard hangs still use the
+automatically re-runs the calibration chain) + the host-side calibration
+cache surviving close (Windows-shaped, §4C); hard hangs still use the
 manual `scripts/reset-sensor.sh`.
 
 ## 8. Known pitfalls (all verified on hardware, 2026-09-12/13)

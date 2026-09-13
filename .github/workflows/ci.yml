@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [egis0575]
+    branches: [master]
   pull_request:
 
 jobs:
@@ -20,7 +20,8 @@ jobs:
 
       - name: Build
         run: |
-          meson setup build -D introspection=false -D doc=false -D installed-tests=false -D gtk-examples=false
+          # single-repo layout: the libfprint source tree lives in libfprint/
+          meson setup build libfprint -D introspection=false -D doc=false -D installed-tests=false -D gtk-examples=false
           meson compile -C build
 
       - name: Smoke-test driver registration

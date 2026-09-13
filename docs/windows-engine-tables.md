@@ -1,7 +1,7 @@
 # Windows 引擎系数表提取与复刻笔记（EgisTouchFPEngine0575.dll v3.7.1.1）
 
 > **状态：完成。** 系数表全部提取，Python 复刻达到离线完美分离，C 移植
-> 已随驱动 [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)
+> 已随驱动 [cosct/fprintdriver](https://github.com/cosct/fprintdriver)（libfprint/ 子树）
 > v0.2.0 发布（`egis0575-matcher.c`）。本文是完整实验记录，供复核与
 > 后续增强。
 > [English version](windows-engine-tables.en.md)

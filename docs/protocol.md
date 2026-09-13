@@ -1,9 +1,9 @@
 # EgisTec EH575 (1c7a:0575) USB 线协议
 
 > **状态：已定案。** 本文档是 EH575 驱动开发的协议基准，全部条目经四源交叉验证，
-> 其中标"真机验证"的条目在 2026-09-12/13 真机会话中确认。驱动已发布：
-> [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)（分支
-> `egis0575`）· AUR `libfprint-egis0575`。
+> 其中标"真机验证"的条目在 2026-09-12/13 真机会话中确认。驱动随
+> [cosct/fprintdriver](https://github.com/cosct/fprintdriver) 仓库分发
+> （`libfprint/` 子树）· AUR `libfprint-egis0575`。
 > [English version](protocol.en.md)
 
 四源交叉验证：topni1 fork（真机验证）、Animeshz 逆向档案（pcap + Ghidra）、
@@ -157,8 +157,10 @@ Zone1/Zone2 坏点统计、vdm hw/target mean），topni1 的 A 链正是把这�
 
 结论：Windows 的传感器不过载是因为**占空比 <0.1%**（只在认证 UI 激活时
 全速采集几秒）。fprintd 语义要求持续报手指状态 → 无法照抄"不值守"；
-本驱动的适配 = 230ms 慢速帧轮询（~7% 占空比）+ 驱动内传感器健康看门狗
-（10 分钟预防性重初始化 + weak-press 失敏检测自动重跑校准链）；硬挂死
+本驱动的适配 = 两档慢速帧轮询（活动后 230ms ~7% 占空比，静默 30 秒后
+降 500ms ~3% 占空比）+ 驱动内传感器健康看门狗
+（10 分钟预防性重初始化 + weak-press 失敏检测自动重跑校准链）+ 校准块
+跨 close 主机侧缓存（Windows 同型，§4C）；硬挂死
 场景用手动 `scripts/reset-sensor.sh`。
 
 ## 8. 已知陷阱（全部真机验证，2026-09-12/13）

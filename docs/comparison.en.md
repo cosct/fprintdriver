@@ -2,7 +2,7 @@
 
 > **Status: research concluded.** All architecture decisions are settled and
 > shipped in the published driver
-> [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)
+> [cosct/fprintdriver](https://github.com/cosct/fprintdriver)（libfprint/ 子树）
 > v0.2.0 (AUR `libfprint-egis0575`). This document preserves the full
 > decision chain and the experimental evidence.
 > [中文版](comparison.md)

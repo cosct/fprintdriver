@@ -11,7 +11,7 @@ Version:        %{drvver}
 Release:        1%{?dist}
 Summary:        libfprint with the experimental EgisTec EH575 (1c7a:0575) driver
 License:        LGPL-2.1-or-later
-URL:            https://github.com/cosct/libfprint-egis0575
+URL:            https://github.com/cosct/fprintdriver
 Source0:        %{url}/archive/refs/tags/egis0575-v%{drvver}.tar.gz
 ExclusiveArch:  x86_64
 
@@ -32,9 +32,12 @@ matcher port, for the EgisTec EH575 (1c7a:0575) fingerprint sensor.
 Replaces the distribution libfprint for devices that need this driver.
 
 %prep
-%setup -q -n libfprint-egis0575-egis0575-v%{drvver}
+# single-repo layout: the tag tarball extracts to fprintdriver-<tag>/ with
+# the libfprint meson tree in a subdirectory
+%setup -q -n fprintdriver-egis0575-v%{drvver}
 
 %build
+cd libfprint
 # udev_hwdb=enabled: meson's auto mode drops the autosuspend hwdb when
 # systemd >= 248 ships one, but systemd's list lacks the out-of-tree EH575.
 %meson -D introspection=false -D doc=false -D installed-tests=false \
@@ -44,6 +47,7 @@ Replaces the distribution libfprint for devices that need this driver.
 %meson_build
 
 %install
+cd libfprint
 %meson_install
 
 %post

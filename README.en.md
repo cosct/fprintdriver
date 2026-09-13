@@ -17,14 +17,18 @@ that can be submitted to
   12-impostor FRR/FAR 0%, offline threshold margin ≥20, on-hardware
   impostor separation margin 15 — evidence-strength caveat at the end of
   that section)
-- **Driver source**:
-  [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)
-  (upstream libfprint + the `egis0575` driver, branch `egis0575`,
-  LGPL-2.1+)
+- **Driver source**: distributed in this repository (`libfprint/`, a git
+  subtree carrying the full upstream libfprint history plus the egis0575
+  driver commits; the former standalone fork
+  cosct/libfprint-egis0575 is superseded by this repo)
 - **Arch users**: AUR package `libfprint-egis0575`
   (`yay -S libfprint-egis0575`)
 - **Todo**: collect feedback from more EH575 machines to tune
   thresholds; prepare the upstreamable patch series
+- **2026-09-13 optimizations**: enrollment same-spot rejection (the
+  Windows HIGHLY_SIMILARITY port, threshold 650, verified precise on
+  hardware), host-side calibration cache surviving close (Windows-shaped),
+  and two-tier idle polling (230/500 ms) — see docs/optimization-plan.md
 - **Upgrade note**: v0.2.0 template serialization dropped the orientation
   field that scoring depends on, so prints enrolled with v0.2.0 cannot
   verify on the new driver — after upgrading, run `fprintd-delete` and
@@ -35,23 +39,21 @@ that can be submitted to
 ```
 docs/     Index in docs/README.md (bilingual): protocol wire-protocol
           baseline · comparison architecture decisions & matcher
-          endgame · windows-engine-tables coefficient extraction
+          endgame · windows-engine-tables coefficient extraction ·
+          windows-enrollment Windows-side enrollment mechanics ·
+          optimization-plan the optimization plan
+libfprint/ Driver source (git subtree: full upstream libfprint history +
+          the egisprint driver, LGPL-2.1+); build dirs builddir/ are
+          not committed
 scripts/  Test and data-collection tooling (see below)
 tools/    Evaluation utilities (egis0575-matcher-test / eval_bz3 / hwpoll)
 packaging/ Release recipes: aur/PKGBUILD (canonical AUR copy) ·
-          deb/build-deb.sh · rpm/libfprint-egis0575.spec — invoked by the fork
-          repo's release workflow on egis0575-v* tags; artifacts are
-          attached to the GitHub Release and the AUR package is updated
-          automatically
+          deb/build-deb.sh · rpm/libfprint-egis0575.spec — invoked by
+          this repository's release workflow on egis0575-v* tags;
+          artifacts are attached to the GitHub Release and the AUR
+          package is updated automatically
 PKGBUILD  Local development packaging (builds from the working tree;
           the AUR version lives on AUR)
-```
-
-The driver source lives in its own repository (the local `libfprint/`
-directory is not distributed with this one):
-
-```bash
-git clone -b egis0575 https://github.com/cosct/libfprint-egis0575 libfprint
 ```
 
 Intentionally not distributed here (size or privacy): `refs/` (four
@@ -62,11 +64,11 @@ third-party reference implementations — clone them yourself),
 ## Reproducing the research workflow
 
 ```bash
-# 0) One-time: clone the driver source into ./libfprint/ (the path the
-#    scripts expect) and build it. (Needs meson>=0.62 + ninja plus dev
+# 0) One-time: clone this repository and build (the driver source is
+#    in-tree under libfprint/). (Needs meson>=0.62 + ninja plus dev
 #    packages for glib2/libusb/libgusb/pixman/openssl/libgudev; on Arch
 #    also gobject-introspection and gtk-doc.)
-git clone -b egis0575 https://github.com/cosct/libfprint-egis0575 libfprint
+git clone https://github.com/cosct/fprintdriver && cd fprintdriver
 meson setup libfprint/builddir libfprint
 meson compile -C libfprint/builddir
 
@@ -101,6 +103,9 @@ Driver tunables (environment variables):
 - `EGIS0575_VERIFY_DUMP_DIR` — dump verify-time probes and gallery
   feature counts (offline matcher analysis)
 - `EGIS0575_DISABLE_STRETCH=1` — disable stretch5 contrast enhancement
+- `EGIS0575_ENROLL_SIM_THRESHOLD` — enrollment same-spot reject threshold
+  (default 650; 0 disables. Calibration in
+  docs/enroll-sim-calibration.txt / scripts/calibrate-enroll-sim.py)
 - `EGIS0575_DEBUG_MAX_FILES` — file cap for PGM/raw-frame dumps (default
   5000, ≈26 MB of raw frames; all debug sinks are written 0600 into 0700
   dirs since they hold biometric data)

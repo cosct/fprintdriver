@@ -2,7 +2,7 @@
 
 > **Status: complete.** All coefficient tables were extracted; the Python
 > replica achieved perfect offline separation; the C port ships with the
-> driver [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)
+> driver [cosct/fprintdriver](https://github.com/cosct/fprintdriver)（libfprint/ 子树）
 > v0.2.0 (`egis0575-matcher.c`). This document is the full lab record,
 > kept for review and future enhancements.
 > [中文版](windows-engine-tables.md)

@@ -1,7 +1,7 @@
 # 四份实现对比与 EH575 驱动架构决策
 
 > **状态：研究收官。** 架构决策全部定案并落地为已发布驱动
-> [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)
+> [cosct/fprintdriver](https://github.com/cosct/fprintdriver)（libfprint/ 子树）
 > v0.2.0（AUR `libfprint-egis0575`）。本文保留完整决策链与实验证据。
 > [English version](comparison.en.md)
 

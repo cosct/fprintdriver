@@ -13,10 +13,14 @@
   数字见 `docs/comparison.md` §6（小样本单机验证：离线 6 同人/12 异人
   FRR/FAR 0%，离线阈值余量 ≥20，真机冒充分离余量 15——证据强度说明
   见该节末尾）
-- **驱动代码**：[cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)
-  （upstream libfprint + `egis0575` 驱动，分支 `egis0575`，LGPL-2.1+）
+- **驱动代码**：随本仓库分发（`libfprint/`，git subtree 保留上游
+  libfprint 完整历史 + egis0575 驱动提交；原独立 fork 仓库
+  cosct/libfprint-egis0575 已由本仓库取代）
 - **Arch 用户**：AUR 包 `libfprint-egis0575`（`yay -S libfprint-egis0575`）
 - **待办**：调优阈值收集更多机型反馈，整理上游化补丁
+- **2026-09-13 优化**：录入同点重复拒绝（Windows HIGHLY_SIMILARITY 移植，
+  阈值 650 实测拦截精准）、校准块跨 close 主机缓存（Windows 同型）、
+  两档空闲轮询（230/500ms）——详见 docs/optimization-plan.md
 - **升级注意**：v0.2.0 的模板序列化丢失取向字段（打分必需），该版本
   录入的指纹在新驱动下无法通过验证——升级后请 `fprintd-delete` 删除
   旧指纹并重新录入
@@ -26,19 +30,16 @@
 ```
 docs/     文档索引见 docs/README.md（中英双语）：
           protocol 线协议基准 · comparison 架构对比与匹配器终局 ·
-          windows-engine-tables 引擎系数表提取与复刻
+          windows-engine-tables 引擎系数表提取与复刻 ·
+          windows-enrollment Windows 端录入机制 · optimization-plan 优化计划
+libfprint/ 驱动源码（git subtree：upstream libfprint 完整历史 + egis0575
+          驱动，LGPL-2.1+）；构建目录 builddir/ 不入库
 scripts/  测试与数据采集工具（见下）
 tools/    评测小工具（egis0575-matcher-test / eval_bz3 / hwpoll）
 packaging/ 发布打包配方：aur/PKGBUILD（AUR 正本）· deb/build-deb.sh ·
-          rpm/libfprint-egis0575.spec —— 由 fork 仓库的 release workflow 在打
+          rpm/libfprint-egis0575.spec —— 由本仓库的 release workflow 在打
           egis0575-v* 标签时调用，产物挂 GitHub Release 并自动更新 AUR
 PKGBUILD  本地开发打包（从工作树构建；AUR 版本见 AUR 仓库）
-```
-
-驱动源码在独立仓库（`libfprint/` 本地目录不随本仓库分发）：
-
-```bash
-git clone -b egis0575 https://github.com/cosct/libfprint-egis0575 libfprint
 ```
 
 不随仓库分发的内容（体积或隐私原因）：`refs/`（四份第三方参考实现，自行
@@ -48,10 +49,10 @@ Windows 驱动，版权归 EgisTec/Acer）。
 ## 复现研究流程
 
 ```bash
-# 0) 一次性：clone 驱动源码到 ./libfprint/（脚本约定的路径）并构建
+# 0) 一次性：clone 本仓库并构建（驱动源码已在树内 libfprint/）
 #    （需要 meson≥0.62 + ninja，以及 glib2/libusb/libgusb/pixman/openssl/
 #     libgudev 的开发包；Arch 上再加 gobject-introspection 和 gtk-doc）
-git clone -b egis0575 https://github.com/cosct/libfprint-egis0575 libfprint
+git clone https://github.com/cosct/fprintdriver && cd fprintdriver
 meson setup libfprint/builddir libfprint
 meson compile -C libfprint/builddir
 
@@ -78,6 +79,9 @@ python3 scripts/analyze-columns.py datasets/press-test-*/
 - `EGIS0575_LIVE_FRAME_PATH` — 实时帧写单个 PGM（看图用）
 - `EGIS0575_VERIFY_DUMP_DIR` — 验证时转储 probe 与画廊特征数日志（离线匹配分析）
 - `EGIS0575_DISABLE_STRETCH=1` — 关闭 stretch5 对比度增强
+- `EGIS0575_ENROLL_SIM_THRESHOLD` — 录入同点重复拒绝阈值（默认 650；
+  0 关闭。标定见 docs/enroll-sim-calibration.txt 与
+  scripts/calibrate-enroll-sim.py）
 - `EGIS0575_DEBUG_MAX_FILES` — PGM/原始帧转储的文件数上限（默认 5000，
   约 26 MB 原始帧；所有调试转储均为 0600 权限、目录 0700，因其含
   生物特征数据）
