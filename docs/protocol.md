@@ -81,7 +81,7 @@ B. 复位 + 上传校准
    8. 轮询 60 00 直到 resp[5]!=0x00（复位完成）
    9. POST_RESET（13 包）
   10. 73 14 ec → 写 5356 字节校准数据 → 读 7 字节确认
-  11. POST_CALIBRATION（20 包，末包 64 14 ec 顺便收一帧暖机）
+  11. POST_CALIBRATION（20 包，末包 64 14 ec 顺便收一帧预热）
 ```
 
 ### B. PRE_INIT/POST_INIT 流程（EH577 路线；EH575 上**不可用**）

@@ -30,7 +30,7 @@ hardware-verified or source-traceable; open items live in
 |---|---|---|---|
 | 架构对比与决策 / Comparison & decisions | 四实现对比、七个匹配方案失败史、Windows 引擎移植终局、稳定性工程 / Four-implementation comparison, the seven failed matchers, the endgame port, stability work | [comparison.md](comparison.md) | [comparison.en.md](comparison.en.md) |
 | 优化计划 / Optimization plan | 逆向结论 → 优化项的路线图与完成状态（工作文档）/ The reverse-engineering-to-optimization roadmap with status (working doc, Chinese) | [optimization-plan.md](optimization-plan.md) | — |
-| 阈值标定报告 / Threshold calibration | 录入相似拒绝阈值的语料分布证据 / The corpus distributions behind the enrollment similarity threshold | [enroll-sim-calibration.txt](enroll-sim-calibration.txt) | — |
+| 阈值标定报告 / Threshold calibration | 录入相似拒绝阈值的数据分布证据 / The corpus distributions behind the enrollment similarity threshold | [enroll-sim-calibration.txt](enroll-sim-calibration.txt) | — |
 
 ## 阅读顺序建议 / Suggested reading order
 

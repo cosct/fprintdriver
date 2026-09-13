@@ -49,10 +49,10 @@
    不是 match-on-chip（几何定案见 [protocol §3](docs/protocol.md#3-图像几何已定案)）
 2. swipe+Bozorth3（topni1 驱动）是精度差的根源；经典匹配方案（NCC/
    Bozorth3/POC/SigFM/方向场）在本传感器原始信噪比下**全部**无法区分
-   同人异指（[comparison §5](docs/comparison.md#5-匹配器实验史七个方案为何全败2026-09-12)）
+   同人不同指（[comparison §5](docs/comparison.md#5-匹配器实验史七个方案为何全败2026-09-12)）
 3. 本驱动 = EH577 的 press 采集架构 + topni1 校准初始化（EH575 出图
    必要条件）+ **Windows 引擎 matcher 移植**（11 取向脊线滤波器组 +
-   512bit 描述子 + 海明/平移簇评分，系数实抽自 vendor DLL；小样本
+   512bit 描述子 + 海明/平移簇评分，系数提取自 vendor DLL；小样本
    离线 FRR/FAR 0%，真机集成验收通过，见
    [comparison §6](docs/comparison.md#6-windows-引擎移植终局方案)）
 4. `01 01 01 → 重跑 PRE_INIT` 是 EH575 的本义错误处理
@@ -93,10 +93,10 @@ Python 脚本依赖见 `requirements.txt`（Python ≥ 3.9 + numpy；eval_sigfm
 - `EGIS0575_SKIP_CALIBRATION=1` — 跳过校准上传走 EH577 式初始化（已知会全零帧，仅 A/B 用）
 - `EGIS0575_PGM_DEBUG_DIR` / `_LOG` / `_INTERVAL_MS` / `_CONTROL` — PGM 数据集采集
   （采集模式下驱动持续转储处理帧，enroll/verify 等动作不会完成——仅供
-  无状态探测采集，配合 `_CONTROL` 指向的门控文件可暂停/恢复）
+  无状态探测采集，配合 `_CONTROL` 指向的控制文件可暂停/恢复）
 - `EGIS0575_FRAME_DUMP_DIR` — 原始 5356 字节帧转储
 - `EGIS0575_LIVE_FRAME_PATH` — 实时帧写单个 PGM（看图用）
-- `EGIS0575_VERIFY_DUMP_DIR` — 验证时转储 probe 与画廊特征数日志（离线匹配分析）
+- `EGIS0575_VERIFY_DUMP_DIR` — 验证时转储 probe 与模板库特征数日志（离线匹配分析）
 - `EGIS0575_DISABLE_STRETCH=1` — 关闭 stretch5 对比度增强
 - `EGIS0575_ENROLL_SIM_THRESHOLD` — 录入同点重复拒绝阈值（默认 650；
   0 关闭。标定见 [enroll-sim-calibration.txt](docs/enroll-sim-calibration.txt)）
@@ -112,9 +112,9 @@ libfprint/ 驱动源码（git subtree：upstream libfprint 完整历史 + egis05
           驱动，LGPL-2.1+）；构建目录 builddir/ 不入库
 scripts/  测试与数据采集工具（probe / 采集 / 分析 / 标定）
 tools/    评测小工具（egis0575-matcher-test / eval_bz3 / hwpoll，make 构建）
-packaging/ 发布打包配方：aur/PKGBUILD（AUR 正本）· deb/build-deb.sh ·
+packaging/ 发布打包配置：aur/PKGBUILD（AUR 版本的权威来源）· deb/build-deb.sh ·
           rpm/libfprint-egis0575.spec —— release workflow 在打
-          egis0575-v* 标签时调用，产物挂 GitHub Release 并自动更新 AUR
+          egis0575-v* 标签时调用，产物上传至 GitHub Release 并自动更新 AUR
 PKGBUILD  本地开发打包（从工作树构建；AUR 版本见 AUR 仓库）
 ```
 

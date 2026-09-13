@@ -29,7 +29,7 @@
 每帧做 HIGHLY_SIMILARITY 判定（SIMILARITY_THRESHOLD 门），同位置重复
 按压**不入池**，等效提示换位置。
 
-**问题**：我们 12 帧画廊可以全部来自同一按压点（test-enroll-verify.sh
+**问题**：我们 12 帧模板库可以全部来自同一按压点（test-enroll-verify.sh
 虽提示换位置但不强制），位置覆盖退化 → 偏心验证按压分数下降（真机
 冒充余量仅 15 分的一部分原因）。
 
@@ -40,7 +40,7 @@
 2. 拒绝时：`enroll_stage` 不推进，`fpi_device_enroll_progress` 带
    `fpi_device_retry_new (FP_DEVICE_RETRY_CENTER_FINGER)`（提示挪位置）。
 3. **先标定后启用**：写 `scripts/calibrate-enroll-sim.py`，用 datasets/
-   现有语料统计两类分布——同人跨按压帧对分（下界）vs 同点重复按压
+   现有数据集统计两类分布——同人跨按压帧对分（下界）vs 同点重复按压
    帧对分（上界），取分离点。预期两分布有重叠区，阈值取跨按压分布的
    P90 保守值；`EGIS0575_ENROLL_SIM_THRESHOLD` env 可调，0 = 关闭。
 4. **防卡死**（对应 Windows 的 MAX_ENROLL_TRY）：连续 4 帧被拒后本阶段
@@ -48,7 +48,7 @@
 
 **验收**：
 - 标定脚本输出两分布报告（留档 docs/ 或 datasets 报告）
-- 真机录入 12 帧，画廊两两分均值下降（覆盖更广的离线证据）
+- 真机录入 12 帧，模板库两两分均值下降（覆盖更广的离线证据）
 - 录入总按压次数 ≤ 16（12 + 最多 4 次拒绝）
 - 真机 verify 4/4 通过（与当前基线持平或更好）
 
@@ -72,7 +72,7 @@
    注释"sensor state across close is unknown"的担忧已被 §4C 证据推翻）
 2. `dev_open`：有缓存 → 新增 `SM_FAST_OPEN` 路径：AGC 寄存器写（61
    0a/0c/50 族，取自 POST_RESET 表）→ `73 14 ec` 上传缓存 → `60 40` 式
-   确认轮询（复用现有 60 00 轮询）→ POST_CAL 头 → 暖机帧
+   确认轮询（复用现有 60 00 轮询）→ POST_CAL 头 → 预热帧
 3. **失效条件**（回退完整 A 链）：传感器健康看门狗触发、超时恢复
    （timeout_recoveries）、校准块损坏标志、transport wedge 恢复后
 4. 不做磁盘持久化（驱动写文件上游不可行——审查 A2 的教训；进程内

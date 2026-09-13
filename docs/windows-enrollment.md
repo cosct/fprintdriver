@@ -44,7 +44,7 @@ CreateEnrollment 里采样数不是常量，而是三层配置的叠加：
    即 Attach 日志中的 `EgisFP\FPParameters` 家族），枚举键值逐一匹配
    20 个 `ENROLL_CTX_*` 名字（SetEnrollConfig，命中即按 id 注入引擎）。
 
-## 3. 逐帧门控（AcceptSampleData → UpdateEnrollment）
+## 3. 逐帧质量检查（AcceptSampleData → UpdateEnrollment）
 
 每按压一帧：
 
@@ -62,7 +62,7 @@ CreateEnrollment 里采样数不是常量，而是三层配置的叠加：
    - `2`：特殊路径，走合并/定稿（thunk 产生合并结果并记录尺寸）。
 4. 调试模式下每帧可落 `Enroll_Skeleton_%02d` / `Enroll_Orininal_%02d`
    （骨架/原始特征转储，`EnrollmentCount=[%d], FSize=[%d]`）——
-   说明**模板是逐帧特征的池化序列**（与本驱动 12 帧画廊同构），
+   说明**模板是逐帧特征的池化序列**（与本驱动 12 帧模板库同构），
    而非融合单模板。
 
 ## 4. 完成与提交
@@ -104,19 +104,19 @@ CreateEnrollment 里采样数不是常量，而是三层配置的叠加：
 |---|---|---|
 | 目标帧数 10/16（型号默认+注册表覆盖） | 固定 12（`EGIS0575_ENROLL_FRAMES`） | 数量级一致，无需改 |
 | 逐帧提取质量门（iResult + RejectDetail） | Stage-2 质量门（grain/ridge/minutiae） | 已有，语义等价 |
-| **HIGHLY_SIMILARITY：同位置重复帧不入池** | 无——12 帧可全部来自同一按压点，画廊覆盖退化 | **最值得移植**（见下） |
+| **HIGHLY_SIMILARITY：同位置重复帧不入池** | 无——12 帧可全部来自同一按压点，模板库覆盖退化 | **最值得移植**（见下） |
 | 变长录入（MIN/MAX_ENROLL_COUNT + MAX_ENROLL_TRY） | 固定 12 阶段 | libfprint 的 `nr_enroll_stages` 为类初始化时静态值，变长需改框架，上游不可行；12 阶段 + 坏帧不推进（现状）已近似 |
-| 模板 = 逐帧特征池化 | 12 帧特征画廊 | 同构 ✓ |
+| 模板 = 逐帧特征池化 | 12 帧特征模板库 | 同构 ✓ |
 | Commit 前存储容量检查 | fprintd 侧管理 | 不适用 |
 | 验证期模板回馈（169959B 'AE' blob） | 未移植（已有记录） | P2 遗留 |
 | 注册表 20 参数可调面 | 驱动 env vars | 研究等价物已够用 |
 
 **建议移植（P1）——录入相似帧拒绝**：在 `on_frame_accepted_enroll` 将
-特征并入画廊前，用现成的 `egis0575_m_score` 对新帧与已录各帧打分；超过
-相似阈值（如单帧分 ≥ AGREE_SCORE 的 1.5 倍量级，需实验标定）时不入画廊、
+特征并入模板库前，用现成的 `egis0575_m_score` 对新帧与已录各帧打分；超过
+相似阈值（如单帧分 ≥ AGREE_SCORE 的 1.5 倍量级，需实验标定）时不入模板库、
 不推进阶段，通过 `fpi_device_enroll_progress` 报
 `FP_DEVICE_RETRY_CENTER_FINGER` 类重试错误提示用户换位置。效果：12 帧
-画廊的位置覆盖显著提升，直接对标 Windows 的 HIGHLY_SIMILARITY +
+模板库的位置覆盖显著提升，直接对标 Windows 的 HIGHLY_SIMILARITY +
 REDUNDANT 族，且不触碰 libfprint 框架约束。
 
 ## 7. 证据索引
@@ -125,7 +125,7 @@ REDUNDANT 族，且不触碰 libfprint 框架约束。
 - 三层采样数：2021 dump `EngineAdapterCreateEnrollment`（RegOpenKeyExA
   "SOFTWARE\\...\\WinBio" + "Minimum Fingerprint Samples"，8≤v<21 否则 16，
   −1/−2 调整；型号 5/7/8 分支设 0x4bf/0x4bd 参数；设备键 SetEnrollConfig）。
-- 逐帧门控：dump `CTouchSensor::AcceptSampleData`（iResult→RejectDetail
+- 逐帧质量检查：dump `CTouchSensor::AcceptSampleData`（iResult→RejectDetail
   9/7/5、count_image_type_identifier==3、Purpose==4 录入分支、
   Enroll_Skeleton_%02d 转储）与 `EngineAdapterUpdateEnrollment`
   （IMAGE_OK/HIGHLY_SIMILARITY/REDUNDANT_ACCEPT 三态 + CurrentEnrollNum）。
