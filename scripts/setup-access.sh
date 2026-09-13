@@ -37,16 +37,19 @@ LSUSB_LINE=$(lsusb -d 1c7a:0575 || true)
 DEVNODE=$(printf '%s' "$LSUSB_LINE" | awk 'NR==1 {gsub(/:/, "", $4); print "/dev/bus/usb/" $2 "/" $4}')
 
 # uaccess 的 ACL 由 systemd-logind 响应 add 动作投放；默认 trigger 动作不够，
-# 这里对目标设备显式重放 add 事件
+# 这里重放 add 事件。优先精确到目标设备的 syspath；拿不到时按 VID/PID 匹配
+# （idVendor/idProduct 是 usb 设备自身的属性，可被 --attr-match 命中），
+# 不对全 USB 子系统重放 add——那会惊动机器上所有 USB 设备
 SYSPATH=""
 if [[ -n "$DEVNODE" && -c "$DEVNODE" ]]; then
   SYSPATH="/sys$(udevadm info -q path -n "$DEVNODE" 2>/dev/null || true)"
 fi
-if [[ -n "$SYSPATH" && "$SYSPATH" != "/sys" && -d "$SYSPATH" ]]; then
-  udevadm trigger --action=add "$SYSPATH" 2>/dev/null || \
-    udevadm trigger --action=add --subsystem-match=usb
+if [[ -n "$SYSPATH" && "$SYSPATH" != "/sys" && -d "$SYSPATH" ]] && \
+   udevadm trigger --action=add "$SYSPATH" 2>/dev/null; then
+  :
 else
-  udevadm trigger --action=add --subsystem-match=usb
+  udevadm trigger --action=add \
+    --attr-match=idVendor=1c7a --attr-match=idProduct=0575
 fi
 
 sleep 2

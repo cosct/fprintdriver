@@ -25,7 +25,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 TOOL = ROOT / "tools" / "egis0575-matcher-test"
 DATA = ROOT / "datasets"
 
-PAT = re.compile (r"^verify-run-(\d{6})-(\d+)$")
+# verify-run-<stamp>-<N>：stamp 新格式 YYYYMMDD-HHMMSS（2026-09-14 起，
+# 见 test-enroll-verify.sh），旧格式 HHMMSS（历史数据集）——两种都收
+PAT = re.compile (r"^verify-run-(\d{8}-\d{6}|\d{6})-(\d+)$")
 
 
 def run_score (a: pathlib.Path, b: pathlib.Path) -> int:

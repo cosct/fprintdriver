@@ -10,12 +10,30 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DUR=${1:-20}
-LOG=/tmp/eh575-probe.log
+if ! [[ "$DUR" =~ ^[0-9]+$ ]] || [[ "$DUR" -lt 1 ]]; then
+  echo "✗ 秒数必须是正整数（收到 '$DUR'）" >&2
+  exit 1
+fi
+# mktemp：/tmp 固定文件名可被其他用户符号链接预占
+LOG=$(mktemp /tmp/eh575-probe.XXXXXX.log)
+
+if [[ ! -x ./libfprint/builddir/examples/enroll ]]; then
+  echo "✗ 找不到 ./libfprint/builddir/examples/enroll（先按 README 构建）" >&2
+  exit 1
+fi
 
 echo "== EH575 无手指探测（${DUR}s），日志: $LOG =="
+set +e
 echo "6" | timeout -s INT -k 5 "$DUR" env G_MESSAGES_DEBUG=all \
   EGIS0575_ACTIVE_WIDTH="${EGIS0575_ACTIVE_WIDTH:-103}" \
-  ./libfprint/builddir/examples/enroll 2>&1 | tee "$LOG" || true
+  ./libfprint/builddir/examples/enroll 2>&1 | tee "$LOG"
+RUN_RC=${PIPESTATUS[1]}
+set -e
+# 0=stdin 结束前正常退出；124=timeout 到点；130=SIGINT——其余是真失败，
+# 摘要里的全 0 不可信，明确警告而不是吞掉
+if [[ "$RUN_RC" -ne 0 && "$RUN_RC" -ne 124 && "$RUN_RC" -ne 130 ]]; then
+  echo "⚠ enroll 以退出码 $RUN_RC 结束（非超时/中断），下面摘要可能不完整" >&2
+fi
 
 echo
 echo "== 结果摘要 =="

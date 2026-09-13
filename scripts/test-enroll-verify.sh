@@ -17,6 +17,12 @@ BIN=./libfprint/builddir/examples
 
 case "${1:-}" in
   enroll)
+    if [[ ! -x "$BIN/enroll" ]]; then
+      echo "✗ 找不到 $BIN/enroll（先按 README 构建）" >&2
+      exit 1
+    fi
+    # mktemp：/tmp 固定文件名可被其他用户符号链接预占
+    ENROLL_LOG=$(mktemp /tmp/eh575-enroll.XXXXXX.log)
     echo "== 录入${FINGER_NAME}（槽位 ${FINGER}）：需要 12 次按压，每次之间完全抬起 =="
     echo "== 关键：刻意改变按压位置，覆盖整个指尖区域 =="
     echo "==   第 1-4 次：正常中心按压 =="
@@ -24,11 +30,12 @@ case "${1:-}" in
     echo "==   第 9-12 次：稍向左/向右轻移 2-3 毫米再按 =="
     echo "$FINGER" | timeout -s INT -k 5 480 env G_MESSAGES_DEBUG=all \
       EGIS0575_ACTIVE_WIDTH="${EGIS0575_ACTIVE_WIDTH:-103}" \
-      "$BIN/enroll" 2>&1 | tee /tmp/eh575-enroll.log | grep -E "Enroll|stage|Stage-2 at|finger|Write|complete" || true
+      "$BIN/enroll" 2>&1 | tee "$ENROLL_LOG" | grep -E "Enroll|stage|Stage-2 at|finger|Write|complete" || true
     echo
     # grep -c 在零匹配时返回 1，pipefail 下会杀死脚本——失败时更要打印摘要
-    STAGES=$(grep -c "Enroll stage" /tmp/eh575-enroll.log || true)
+    STAGES=$(grep -c "Enroll stage" "$ENROLL_LOG" || true)
     echo "已录入阶段日志: ${STAGES} 条 ÷ 2 = $(( STAGES / 2 ))/12"
+    echo "完整日志: $ENROLL_LOG"
     ;;
 
   verify)
@@ -37,17 +44,23 @@ case "${1:-}" in
       echo "✗ 次数必须是正整数（收到 '$N'）" >&2
       exit 1
     fi
+    if [[ ! -x "$BIN/verify" ]]; then
+      echo "✗ 找不到 $BIN/verify（先按 README 构建）" >&2
+      exit 1
+    fi
     MATCH=0; FAIL=0
-    STAMP=$(date +%H%M%S)
+    # 带日期避免跨天同刻撞前缀（calibrate-enroll-sim.py 按前缀归并会话）
+    STAMP=$(date +%Y%m%d-%H%M%S)
+    RUNTMP=$(mktemp -d /tmp/eh575-verify.XXXXXX)
     echo "== 验证 ${N} 次（每次自然中心按压即可，按住 1-2 秒再抬）=="
-    echo "== probe/画廊转储: datasets/verify-run-$STAMP-{1..$N} =="
+    echo "== probe/画廊转储: datasets/verify-run-$STAMP-{1..$N}；本轮日志: $RUNTMP =="
     for i in $(seq 1 "$N"); do
       echo "-- 第 $i/$N 次，请按压手指 --"
       OUT=$(echo "$FINGER" | timeout -s INT -k 5 60 env G_MESSAGES_DEBUG=all \
         EGIS0575_ACTIVE_WIDTH="${EGIS0575_ACTIVE_WIDTH:-103}" \
         EGIS0575_VERIFY_DUMP_DIR="datasets/verify-run-$STAMP-$i" \
         "$BIN/verify" 2>&1 || true)
-      echo "$OUT" > "/tmp/eh575-verify-$i.log"
+      echo "$OUT" > "$RUNTMP/verify-$i.log"
       SCORE=$(echo "$OUT" | grep -o "best_score=[0-9/]*" | head -1 || true)
       if echo "$OUT" | grep -q "=> MATCH"; then
         MATCH=$((MATCH+1)); echo "   ✓ MATCH  $SCORE"

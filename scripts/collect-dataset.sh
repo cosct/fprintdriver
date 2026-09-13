@@ -14,22 +14,37 @@ umask 077
 
 NAME=${1:?用法: collect-dataset.sh <数据集名> [秒数]}
 DUR=${2:-60}
+if ! [[ "$DUR" =~ ^[0-9]+$ ]] || [[ "$DUR" -lt 1 ]]; then
+  echo "✗ 秒数必须是正整数（收到 '$DUR'）" >&2
+  exit 1
+fi
 STAMP=$(date +%Y%m%d-%H%M%S)
 OUT="datasets/${NAME}-${STAMP}"
 mkdir -m 700 -p "$OUT"
+
+if [[ ! -x ./libfprint/builddir/examples/enroll ]]; then
+  echo "✗ 找不到 ./libfprint/builddir/examples/enroll（先按 README 构建）" >&2
+  exit 1
+fi
 
 echo "== 采集数据集 '$NAME'（${DUR}s）→ $OUT =="
 echo "  1) 前 3 秒不要碰传感器（背景预热）"
 echo "  2) 之后正常按压/抬起，采集期间尽量多按几次"
 echo
 
+set +e
 echo "6" | timeout -s INT -k 5 "$DUR" env G_MESSAGES_DEBUG=all \
   EGIS0575_ACTIVE_WIDTH="${EGIS0575_ACTIVE_WIDTH:-103}" \
   EGIS0575_PGM_DEBUG_DIR="$OUT" \
   EGIS0575_PGM_DEBUG_LOG="$OUT/metrics.csv" \
   EGIS0575_PGM_DEBUG_INTERVAL_MS="${EGIS0575_PGM_DEBUG_INTERVAL_MS:-100}" \
   EGIS0575_FRAME_DUMP_DIR="$OUT/raw" \
-  ./libfprint/builddir/examples/enroll 2>&1 | tee "$OUT/session.log" || true
+  ./libfprint/builddir/examples/enroll 2>&1 | tee "$OUT/session.log"
+RUN_RC=${PIPESTATUS[1]}
+set -e
+if [[ "$RUN_RC" -ne 0 && "$RUN_RC" -ne 124 && "$RUN_RC" -ne 130 ]]; then
+  echo "⚠ enroll 以退出码 $RUN_RC 结束（非超时/中断），下面摘要可能不完整" >&2
+fi
 
 echo
 echo "== 采集结果 =="
