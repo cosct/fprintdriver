@@ -49,7 +49,7 @@
  * ==================== Basic definitions ====================
  */
 
-#define NCC_ENROLL_FRAMES 12     /* enrollment presses = gallery frames */
+#define EGIS0575_ENROLL_FRAMES 12     /* enrollment presses = gallery frames */
 
 /* Struct to share data across lifecycle */
 struct _FpDeviceEgis0575
@@ -391,7 +391,7 @@ unpack_feature_frames (GVariant             *data,
   return TRUE;
 }
 
-/* Verify verdict (docs/windows-engine-tables.md): a probe matches when its
+/* Verify verdict (see https://github.com/cosct/fprintdriver/blob/master/docs/windows-engine-tables.md): a probe matches when its
  * best gallery score clears the threshold AND at least two gallery frames
  * agree above the agree floor. */
 static gboolean
@@ -1348,12 +1348,12 @@ on_frame_accepted_enroll (FpDevice *dev,
   self->waiting_for_lift = TRUE;
 
   fp_info ("Enroll stage %u/%u captured (%d features); waiting for lift",
-           self->enroll_stage, NCC_ENROLL_FRAMES, fs->n);
+           self->enroll_stage, EGIS0575_ENROLL_FRAMES, fs->n);
 
-  if (self->enroll_stage < NCC_ENROLL_FRAMES)
+  if (self->enroll_stage < EGIS0575_ENROLL_FRAMES)
     return;
 
-  GVariant *feats = pack_feature_frames (self->enroll_feats, NCC_ENROLL_FRAMES);
+  GVariant *feats = pack_feature_frames (self->enroll_feats, EGIS0575_ENROLL_FRAMES);
   fpi_print_set_type (enroll_print, FPI_PRINT_RAW);
   g_object_set (enroll_print, "fpi-data", feats, NULL);
 
@@ -1362,7 +1362,7 @@ on_frame_accepted_enroll (FpDevice *dev,
 }
 
 /* Single-shot like verify: hand the stage-2-qualifying image straight back to
- * fp_device_capture_finish(). This is the exact resized snapshot the NCC matcher
+ * fp_device_capture_finish(). This is the exact resized snapshot the engine matcher
  * sees, so PGM debug tooling stores the same pixels the matcher would.
  * Setting stop=TRUE lets the SSM wind down to SM_DONE after we complete; without
  * it the poll loop would keep running past the completed action. */
@@ -2559,7 +2559,7 @@ dev_enroll (FpDevice *dev)
 
   fp_dbg ("Enroll requested");
   g_clear_pointer (&self->enroll_feats, g_free);
-  self->enroll_feats = g_new0 (Egis0575MFeatureSet, NCC_ENROLL_FRAMES);
+  self->enroll_feats = g_new0 (Egis0575MFeatureSet, EGIS0575_ENROLL_FRAMES);
   self->enroll_stage = 0;
 
   start_capture_action (dev);
@@ -2665,7 +2665,7 @@ fpi_device_egis0575_class_init (FpDeviceEgis0575Class *klass)
   dev_class->type = FP_DEVICE_TYPE_USB;
   dev_class->id_table = id_table;
   dev_class->scan_type = FP_SCAN_TYPE_PRESS;
-  dev_class->nr_enroll_stages = NCC_ENROLL_FRAMES;
+  dev_class->nr_enroll_stages = EGIS0575_ENROLL_FRAMES;
   dev_class->temp_hot_seconds = -1;
 
   dev_class->open = dev_open;

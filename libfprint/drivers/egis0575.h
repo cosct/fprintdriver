@@ -4,7 +4,9 @@
  * (championswimmer/libfprint-eh577, commit b19955e, LGPL-2.1+):
  * Copyright (C) 2021 Animesh Sahu <animeshsahu19@yahoo.com>
  * Copyright (C) 2026 Arnav Gupta <dev@championswimmer.in>
- * EH575 adaptation for the fprintdriver research tree.
+ * EH575 adaptation for the fprintdriver research project
+ * (https://github.com/cosct/fprintdriver):
+ * Copyright (C) 2026 cosct <cosct@outlook.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -44,7 +46,7 @@
  * First 4 bytes of response is "SIGE"
  *
  * These tables are the EH575 sequences from the Animeshz reverse-engineering
- * work; EH577 hardware accepts the same family (see docs/protocol.md).
+ * work; EH577 hardware accepts the same family (see https://github.com/cosct/fprintdriver/blob/master/docs/protocol.md).
  */
 
 /* *INDENT-OFF* */
@@ -244,11 +246,11 @@ static const Packet EGIS0575_POST_CALIBRATION_PACKETS[] = {
  * The USB frame is 103x52, row-major with a 103-byte stride.
  *
  * On EH577 the rightmost 33 columns (src_x 70..102) are returned as hard zeros
- * by the firmware on every frame, so the responsive area is 70x52 there.  For
- * EH575 this is UNVERIFIED: the topni1 driver treats the full 103 columns as
- * active.  The active width is therefore a runtime setting (default full width)
- * overridable with the EGIS0575_ACTIVE_WIDTH environment variable until the
- * Phase-3 column-activity experiment settles it (see docs/comparison.md).
+ * by the firmware on every frame, so the responsive area is 70x52 there.
+ * On EH575 a 600-frame column-activity experiment found all 103 columns
+ * responsive (no dead zone); full width is the settled default.  The
+ * EGIS0575_ACTIVE_WIDTH environment variable is kept for re-checking
+ * other units (see the fprintdriver research repo, docs/comparison.md).
  */
 #define EGIS0575_SENSOR_STRIDE_X 103          /* raw row stride (active + possible zero pad) */
 #define EGIS0575_SENSOR_STRIDE_Y 52           /* raw rows */
@@ -282,11 +284,13 @@ static const Packet EGIS0575_POST_CALIBRATION_PACKETS[] = {
 #define EGIS0575_STAGE2_MIN_RIDGE_PIXELS 4000
 
 /*
- * Presence gate: coverage is the primary background-subtracted signal, while
- * raw finger-like pixels harden it against hot-pixel/background artefacts.
- * EH577 measurements: no-finger frames <=173 raw finger-like pixels,
- * finger-present frames >=1047.  EH575 values may differ; revisit with
- * EGIS0575_PGM_DEBUG data.
+ * Presence gate: coverage is the primary background-subtracted signal.
+ * EH575 semantics differ from EH577: an empty frame is full-frame
+ * low-intensity content (~5356 raw finger-like pixels), so a real press
+ * REDUCES the raw finger-like count; raw >= 5300 therefore reads as
+ * "no finger" and the count also feeds the weak-press degradation
+ * heuristic in the sensor-health watchdog.  (EH577 for comparison:
+ * no-finger <=173, finger-present >=1047.)
  */
 #define EGIS0575_PRESENCE_MIN_COVERAGE_PCT 18
 #define EGIS0575_PRESENCE_MIN_INTENSITY 10

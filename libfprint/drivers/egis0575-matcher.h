@@ -1,6 +1,8 @@
 /*
  * EgisTec EH575 matcher: port of the Windows-engine replica validated in
- * Python (scripts/egis_matcher.py, docs/windows-engine-tables.md).
+ * the fprintdriver research project.  Copyright (C) 2026 cosct <cosct@outlook.com>
+ * Python (scripts/egis_matcher.py) validated in
+ * https://github.com/cosct/fprintdriver (docs/windows-engine-tables.md).
  *
  * Pipeline: flat-field → 11-orientation ridge matched filter bank (taps
  * extracted from EgisTouchFPEngine0575.dll) → interest points on filter
@@ -31,7 +33,8 @@
  * the Python reference (different interpolation path in the oriented
  * filter), so its score scale differs: validated on the same capture
  * corpus, genuine 6/6 scored 336-470 and impostors 0/12 scored 127-280
- * (docs/windows-engine-tables.md). Threshold 300 splits with ≥20 margin. */
+ * (https://github.com/cosct/fprintdriver/blob/master/docs/windows-engine-tables.md).
+ * Threshold 300 splits with ≥20 margin. */
 #define EGIS0575_M_MATCH_THRESHOLD 300
 #define EGIS0575_M_AGREE_SCORE 150
 #define EGIS0575_M_AGREE_FRAMES 2

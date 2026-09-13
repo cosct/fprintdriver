@@ -1,7 +1,7 @@
 /*
  * EgisTec EH575 matcher (see egis0575-matcher.h for provenance).
  *
- * Copyright (C) 2026 fprintdriver research contributors
+ * Copyright (C) 2026 cosct <cosct@outlook.com>
  * LGPL-2.1-or-later
  */
 
