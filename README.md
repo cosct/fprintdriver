@@ -1,5 +1,7 @@
 # fprintdriver — EgisTec EH575 (1c7a:0575) libfprint 驱动研究
 
+> [English version](README.en.md)
+
 目标：让 EgisTec EH575 指纹传感器（Acer SFX14-41G 等机型）在 Linux 上真正可用
 （识别精度达到 KDE 解锁水准），最终产出可提交给
 [libfprint 上游](https://gitlab.freedesktop.org/libfprint/libfprint)的驱动。
@@ -47,7 +49,7 @@ Windows 驱动，版权归 EgisTec/Acer）。
 # 3) 采数据集：按脚本提示按压（先空 3 秒做背景预热）
 ./scripts/collect-dataset.sh press-test 60
 
-# 4) 死区列验证（EH575 的有效宽度是 70 还是 103？）
+# 4) 列活跃度分析（已定案：103 列全活跃、无死区；脚本供新机型复核）
 python3 scripts/analyze-columns.py datasets/press-test-*/
 ```
 
