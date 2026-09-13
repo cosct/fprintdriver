@@ -132,9 +132,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$TAG" --verify-tag --generate-notes \
+          gh release create -R cosct/libfprint-egis0575 "$TAG" --verify-tag --generate-notes \
             --title "egis0575 driver $VER" || true
-          gh release upload "$TAG" ./*.pkg.tar.zst ./*.deb ./*.rpm --clobber
+          gh release upload -R cosct/libfprint-egis0575 "$TAG" ./*.pkg.tar.zst ./*.deb ./*.rpm --clobber
 
   aur:
     needs: [build-arch]
