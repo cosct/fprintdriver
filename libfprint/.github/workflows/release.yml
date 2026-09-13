@@ -1,0 +1,222 @@
+name: release
+
+# Builds deb/rpm/zst packages for an egis0575-v* tag, attaches them to a
+# GitHub Release, and updates the AUR package (libfprint-egis0575) via SSH.
+# Packaging recipes live in the research repo under packaging/.
+#
+# The AUR step needs the AUR_SSH_PRIVATE_KEY repo secret (dedicated key,
+# public half registered in the AUR account). It skips with a warning
+# while the secret is unset, and prints instructions if the key is not
+# accepted by AUR yet. workflow_dispatch requires the tag to exist
+# (packages are built from the tag tarball).
+on:
+  push:
+    tags: ['egis0575-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Driver version to release (e.g. 0.2.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-arch:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Derive version from tag
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "VER=${{ inputs.version }}" >> "$GITHUB_ENV"
+          else
+            echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v4
+        with:
+          repository: cosct/fprintdriver
+          path: research
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            meson ninja git systemd-libs pacman-contrib \
+            libusb libgusb openssl pixman glib2 libgudev
+      - name: Build package
+        run: |
+          cp research/packaging/aur/PKGBUILD .
+          sed -i "s/^pkgver=.*/pkgver=$VER/; s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          useradd -m builder
+          chown -R builder: .
+          # the packaged sha256sums belongs to the previous tag's tarball;
+          # refresh it for this tag or makepkg fails the integrity check
+          sudo -u builder updpkgsums
+          sudo -u builder makepkg -f --noconfirm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: '*.pkg.tar.zst'
+
+  build-deb:
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+      - name: Derive version from tag
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "VER=${{ inputs.version }}" >> "$GITHUB_ENV"
+          else
+            echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v4
+        with:
+          repository: cosct/fprintdriver
+          path: research
+      - name: Build package
+        run: |
+          # pin the tag tarball: build-deb.sh verifies this checksum on its
+          # own download
+          SHA=$(curl -fsSL --retry 3 "https://github.com/cosct/libfprint-egis0575/archive/refs/tags/egis0575-v$VER.tar.gz" | sha256sum | cut -d' ' -f1)
+          bash research/packaging/deb/build-deb.sh "$VER" "$SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-package
+          path: '*.deb'
+
+  build-rpm:
+    runs-on: ubuntu-latest
+    container: fedora:42
+    steps:
+      - name: Derive version from tag
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "VER=${{ inputs.version }}" >> "$GITHUB_ENV"
+          else
+            echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v4
+        with:
+          repository: cosct/fprintdriver
+          path: research
+      - name: Install build dependencies
+        run: |
+          dnf install -y rpm-build gcc gcc-c++ curl tar gzip \
+            meson ninja-build glib2-devel libgusb-devel \
+            pixman-devel libusb1-devel systemd-devel openssl-devel libgudev-devel
+      - name: Build package
+        run: |
+          mkdir -p sources
+          URL="https://github.com/cosct/libfprint-egis0575/archive/refs/tags/egis0575-v$VER.tar.gz"
+          curl -fsSL --retry 3 -o "sources/egis0575-v$VER.tar.gz" "$URL"
+          # verify the tarball against an independently re-downloaded copy
+          EXPECTED=$(curl -fsSL --retry 3 "$URL" | sha256sum | cut -d' ' -f1)
+          echo "$EXPECTED  sources/egis0575-v$VER.tar.gz" | sha256sum -c -
+          rpmbuild -bb \
+            --define "version $VER" \
+            --define "_sourcedir $PWD/sources" \
+            --define "_rpmdir $PWD" \
+            research/packaging/rpm/libfprint-egis0575.spec
+          mv x86_64/*.rpm . 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package
+          path: '*.rpm'
+
+  release:
+    needs: [build-arch, build-deb, build-rpm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Tag name
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+            echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
+          else
+            echo "TAG=egis0575-v${{ inputs.version }}" >> "$GITHUB_ENV"
+            echo "VER=${{ inputs.version }}" >> "$GITHUB_ENV"
+          fi
+      - name: Create release and upload packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create -R cosct/libfprint-egis0575 "$TAG" --verify-tag --generate-notes \
+            --title "egis0575 driver $VER" || true
+          gh release upload -R cosct/libfprint-egis0575 "$TAG" ./*.pkg.tar.zst ./*.deb ./*.rpm --clobber
+
+  aur:
+    needs: [build-arch]
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Derive version from tag
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "VER=${{ inputs.version }}" >> "$GITHUB_ENV"
+          else
+            echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
+          fi
+      - name: Check AUR secret
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "::warning::AUR_SSH_PRIVATE_KEY secret not set; skipping AUR update. See packaging/aur/PKGBUILD header for setup."
+            exit 0
+          fi
+          # mark the rest of the job as skipped-but-green
+          echo "HAVE_KEY=1" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        if: env.HAVE_KEY == '1'
+        with:
+          repository: cosct/fprintdriver
+          path: research
+      - name: Update AUR package
+        if: env.HAVE_KEY == '1'
+        run: |
+          install -m 600 /dev/null aur.key
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > aur.key
+          export GIT_SSH_COMMAND="ssh -i $PWD/aur.key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+
+          # openssh first: the preflight below needs the ssh binary
+          # (archlinux:base-devel ships neither git nor openssh)
+          pacman -Syu --noconfirm --needed openssh git \
+            pacman-contrib meson ninja gobject-introspection gtk-doc systemd-libs \
+            libusb libgusb openssl pixman glib2 libgudev
+
+          # 'help' is a real command in AUR's restricted shell: exit 0 only
+          # with valid auth (the Welcome banner only prints in no-command mode).
+          ssh_out=$(ssh -i aur.key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+               aur@aur.archlinux.org help 2>&1) || ssh_rc=$?
+          if [ -n "${ssh_rc:-}" ]; then
+            echo "ssh preflight output: $ssh_out"
+            echo "::error::AUR ssh preflight failed (rc=$ssh_rc). If the output says Permission denied, the public half of AUR_SSH_PRIVATE_KEY is not registered in the AUR account (My Account -> SSH keys)."
+            exit 1
+          fi
+
+          git clone ssh://aur@aur.archlinux.org/libfprint-egis0575.git aur
+          # makepkg must run as non-root, so the tree is chowned to builder
+          # below — tell git the directory is trusted before that flips
+          # ownership and every later root git call hits the dubious-
+          # ownership refusal
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/aur"
+          cp research/packaging/aur/PKGBUILD aur/PKGBUILD
+          cd aur
+          sed -i "s/^pkgver=.*/pkgver=$VER/; s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          id builder 2>/dev/null || useradd -m builder
+          chown -R builder: .
+          # refresh the source checksum and regenerate .SRCINFO
+          sudo -u builder updpkgsums
+          sudo -u builder makepkg --printsrcinfo > .SRCINFO
+          if git diff --quiet; then
+            echo "AUR package already at $VER; nothing to push."
+          else
+            git config user.name "cosct-ci"
+            git config user.email "cosct@outlook.com"
+            git add PKGBUILD .SRCINFO
+            git commit -m "Update to $VER"
+            git push origin master
+            echo "AUR package updated to $VER."
+          fi
