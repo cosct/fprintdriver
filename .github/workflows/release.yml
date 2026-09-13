@@ -187,6 +187,11 @@ jobs:
           fi
 
           git clone ssh://aur@aur.archlinux.org/libfprint-egis0575.git aur
+          # makepkg must run as non-root, so the tree is chowned to builder
+          # below — tell git the directory is trusted before that flips
+          # ownership and every later root git call hits the dubious-
+          # ownership refusal
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/aur"
           cp research/packaging/aur/PKGBUILD aur/PKGBUILD
           cd aur
           sed -i "s/^pkgver=.*/pkgver=$VER/; s/^pkgrel=.*/pkgrel=1/" PKGBUILD
@@ -195,12 +200,6 @@ jobs:
           # refresh the source checksum and regenerate .SRCINFO
           sudo -u builder updpkgsums
           sudo -u builder makepkg --printsrcinfo > .SRCINFO
-          echo "=== diagnose: user=$(whoami) cwd=$PWD"
-          ls -A
-          ls .git | head -3
-          env | grep -E "^GIT_" || echo "no GIT_ env"
-          git config --global --list 2>/dev/null | head -3 || echo "no global config"
-          git status 2>&1 | head -3
           if git diff --quiet; then
             echo "AUR package already at $VER; nothing to push."
           else
