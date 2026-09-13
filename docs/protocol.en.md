@@ -141,9 +141,10 @@ Conclusion: Windows keeps the sensor healthy via a **duty cycle below
 0.1%** (full-speed capture only for a few seconds while the auth UI is
 active). fprintd semantics require continuous finger-state reporting, so
 "don't babysit" cannot be copied. This driver's adaptation: slow 230 ms
-frame polling (~7% duty cycle) + USB-reset recovery for long-session
-degradation (`scripts/reset-sensor.sh`; an in-driver automatic watchdog
-is still on the todo list, see §9).
+frame polling (~7% duty cycle) + the in-driver sensor-health watchdog
+(10-minute prophylactic re-init + weak-press degradation detection that
+automatically re-runs the calibration chain); hard hangs still use the
+manual `scripts/reset-sensor.sh`.
 
 ## 8. Known pitfalls (all verified on hardware, 2026-09-12/13)
 
@@ -164,8 +165,9 @@ is still on the todo list, see §9).
 5. `63 01 02 0f 03` responds with 9 bytes (§2)
 6. **Progressive desensitization under long continuous polling**: after
    >10-minute-scale continuous polling, press coverage decays from 50% to
-   2–5% — `USBDEVFS_RESET` restores it immediately; automatic in-driver
-   detection + recovery is pending
+   2–5% — the in-driver watchdog recovers automatically (10-minute
+   prophylactic re-init + weak-press detection re-running the calibration
+   chain); hard hangs use the manual `USBDEVFS_RESET`
 
 ## 9. System-level acceptance (2026-09-13 00:39)
 

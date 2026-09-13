@@ -55,7 +55,7 @@ EH575 协议表 + Windows 引擎 matcher 移植（§6）。
 ### 图像处理管线（顺序）
 1. 全宽 103×52（EH575 无死区，§4 决策 2）
 2. 暖背景扣除（`val > bg+2 ? val-bg : 0`）
-3. pad 宽度到 4 的倍数（104）→ `fpi_image_resize` 2x → 206×104
+3. pad 宽度到 4 的倍数（104）→ `fpi_image_resize` 2x → 208×104
 4. 3×3 中值降噪（去高频噪点，保边缘）
 5. stretch5 对比度拉伸：p5..p99 → 20..245
 6. Stage-2 质量门控（全部通过才接受）：
@@ -148,8 +148,10 @@ Windows 原版阈值为 660（自适应 ±80/±60 封顶 1.5x）；本驱动因 
 6. USBDEVFS_RESET 软复位（scripts/reset-sensor.sh）从端点残留/挂死恢复
 7. 帧读取挂死时 2s 超时不触发、SIGINT 链失效 → 只能 kill -9 + 复位，
    根因与固件疲劳相关，关闭序列（第 3 条）为主要缓解
-8. 长会话渐进失敏（>10 分钟轮询 coverage 50%→2–5%）→ USBDEVFS_RESET
-   立即恢复；驱动内自动检测+恢复待实现
+8. 长会话渐进失敏（>10 分钟轮询 coverage 50%→2–5%）→ **驱动内看门狗已随
+   v0.2.0 实现**：10 分钟预防性完整重初始化 + weak-press 失敏检测（8 秒
+   窗口 ≥20 帧）→ 回收 claim + 重跑校准链自动恢复；见 §7 第 7 条的硬挂死
+   场景仍用 USBDEVFS_RESET 手动恢复
 
 ## 8. 已发现的上游问题
 
@@ -160,7 +162,9 @@ Windows 原版阈值为 660（自适应 ±80/±60 封顶 1.5x）；本驱动因 
 
 1. identify（1:N）能否安全启用——画廊数量上限未测
 2. 冒充分离余量仅 15 分（285 vs 300）——扩数据集微调阈值或加严 agree
-3. 驱动内失敏自动检测 + USBDEVFS_RESET 自动恢复（现为手动脚本）
+3. 帧读取硬挂死（2s 超时都不触发、SIGINT 链失效，§7 第 7 条）时的自动
+   USBDEVFS_RESET——失敏看门狗已在驱动内实现（§7 第 8 条），此极端场景
+   仍需手动 scripts/reset-sensor.sh
 4. 长时匹配阈值自适应（Windows 有，未移植）
 5. 上游化补丁整理（含 matcher 独立文件 + 协议文档），目标
    [libfprint 上游](https://gitlab.freedesktop.org/libfprint/libfprint)

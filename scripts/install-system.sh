@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "== 打包并安装 libfprint-egis0575-experimental =="
+echo "== 打包并安装 libfprint-egis0575（本地开发树版本）=="
 makepkg -f -i
 
 echo

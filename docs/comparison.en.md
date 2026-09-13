@@ -65,7 +65,7 @@ engine matcher (§6).
 ### Image pipeline (in order)
 1. Full 103×52 width (EH575 has no dead columns, decision §4)
 2. Warm-background subtraction (`val > bg+2 ? val-bg : 0`)
-3. Pad width to a multiple of 4 (104) → `fpi_image_resize` 2x → 206×104
+3. Pad width to a multiple of 4 (104) → `fpi_image_resize` 2x → 208×104
 4. 3×3 median denoise (kills high-frequency speckle, keeps edges)
 5. stretch5 contrast stretch: p5..p99 → 20..245
 6. Stage-2 quality gate (all must pass):
@@ -185,8 +185,10 @@ not ported.
    chain fails → only kill -9 + reset; root cause is firmware fatigue,
    the shutdown sequence (item 3) is the main mitigation
 8. Long-session progressive desensitization (>10 min polling, coverage
-   50%→2–5%) → USBDEVFS_RESET restores immediately; automatic in-driver
-   detection + recovery is pending
+   50%→2–5%) → **in-driver watchdog shipped with v0.2.0**: 10-minute
+   prophylactic full re-init + weak-press degradation detection (≥20 frames
+   in an 8 s window) → claim recycle + calibration-chain re-run; the hard
+   hang case of item 7 still needs the manual USBDEVFS_RESET script
 
 ## 8. Upstream issues found
 
@@ -200,8 +202,10 @@ not ported.
    untested
 2. Impostor separation margin is only 15 points (285 vs 300) — widen the
    dataset to retune, or tighten the agree rule
-3. Automatic in-driver desensitization detection + automatic
-   USBDEVFS_RESET recovery (currently a manual script)
+3. Automatic USBDEVFS_RESET for hard frame-read hangs (2 s timeouts don't
+   even fire, SIGINT chain dead — §7 item 7); the desensitization watchdog
+   is already in-driver (§7 item 8), only this extreme case still needs the
+   manual scripts/reset-sensor.sh
 4. Long-run adaptive matching threshold (Windows has it; not ported)
 5. Upstream patch preparation (separate matcher file + protocol docs),
    targeting [libfprint upstream](https://gitlab.freedesktop.org/libfprint/libfprint)
