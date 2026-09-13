@@ -49,7 +49,7 @@ jobs:
           else
             echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm --needed \
@@ -65,7 +65,7 @@ jobs:
           # refresh it for this tag or makepkg fails the integrity check
           sudo -u builder updpkgsums
           sudo -u builder makepkg -f --noconfirm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: arch-package
           path: '*.pkg.tar.zst'
@@ -87,7 +87,7 @@ jobs:
           else
             echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build package
         run: |
           # the base bookworm container has no curl; build-deb.sh installs
@@ -98,7 +98,7 @@ jobs:
           SHA=$(curl -fsSL --retry 3 "https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/egis0575-v$VER.tar.gz" | sha256sum | cut -d' ' -f1)
           test -n "$SHA"
           bash packaging/deb/build-deb.sh "$VER" "$SHA"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: deb-package
           path: '*.deb'
@@ -120,7 +120,7 @@ jobs:
           else
             echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install build dependencies
         run: |
           dnf install -y rpm-build gcc gcc-c++ curl tar gzip \
@@ -146,7 +146,7 @@ jobs:
             --define "_rpmdir $PWD" \
             packaging/rpm/libfprint-egis0575.spec
           mv x86_64/*.rpm . 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rpm-package
           path: '*.rpm'
@@ -159,10 +159,10 @@ jobs:
     steps:
       # checkout first (its clean step must not wipe the downloaded
       # artifacts) — the version-sync step at the end commits to master
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: master
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
       - name: Tag name
@@ -250,7 +250,7 @@ jobs:
           fi
           # mark the rest of the job as skipped-but-green
           echo "HAVE_KEY=1" >> "$GITHUB_ENV"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: env.HAVE_KEY == '1'
       - name: Update AUR package
         if: env.HAVE_KEY == '1'
