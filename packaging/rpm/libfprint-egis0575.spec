@@ -1,7 +1,7 @@
 # libfprint + the experimental EgisTec EH575 (1c7a:0575) driver.
-# Research project: https://github.com/cosct/fprintdriver
+# Research project: https://github.com/cosct/libfprint-eh575
 # Release CI builds this spec with --define "version <driver-version>".
-%define drvver %{?version}%{!?version:0.2.0}
+%define drvver %{?version}%{!?version:0.2.1}
 %define debug_package %{nil}
 # libfprint base bundled with the driver (root meson.build version:)
 %define lfver 1.94.100
@@ -11,7 +11,7 @@ Version:        %{drvver}
 Release:        1%{?dist}
 Summary:        libfprint with the experimental EgisTec EH575 (1c7a:0575) driver
 License:        LGPL-2.1-or-later
-URL:            https://github.com/cosct/fprintdriver
+URL:            https://github.com/cosct/libfprint-eh575
 Source0:        %{url}/archive/refs/tags/egis0575-v%{drvver}.tar.gz
 ExclusiveArch:  x86_64
 
@@ -34,7 +34,7 @@ Replaces the distribution libfprint for devices that need this driver.
 %prep
 # single-repo layout: the tag tarball extracts to fprintdriver-<tag>/ with
 # the libfprint meson tree in a subdirectory
-%setup -q -n fprintdriver-egis0575-v%{drvver}
+%setup -q -n libfprint-eh575-egis0575-v%{drvver}
 
 %build
 cd libfprint

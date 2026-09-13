@@ -1,4 +1,4 @@
-# fprintdriver — EgisTec EH575 (1c7a:0575) libfprint driver research
+# libfprint-eh575 — the EgisTec EH575 (1c7a:0575) Linux fingerprint driver
 
 > [中文版](README.md)
 
@@ -68,7 +68,7 @@ third-party reference implementations — clone them yourself),
 #    in-tree under libfprint/). (Needs meson>=0.62 + ninja plus dev
 #    packages for glib2/libusb/libgusb/pixman/openssl/libgudev; on Arch
 #    also gobject-introspection and gtk-doc.)
-git clone https://github.com/cosct/fprintdriver && cd fprintdriver
+git clone https://github.com/cosct/libfprint-eh575 && cd libfprint-eh575
 meson setup libfprint/builddir libfprint
 meson compile -C libfprint/builddir
 
@@ -115,21 +115,41 @@ Python-script dependencies are listed in `requirements.txt` (Python ≥ 3.9
 repository (docs/scripts/tools) is licensed LGPL-2.1-or-later like the
 driver (see `LICENSE`).
 
+## Deep-reading map (question → section)
+
+| Question | Where |
+|---|---|
+| Wire protocol & command semantics (CET300 set, init sequences, open items) | [protocol §2](docs/protocol.en.md#2-command-and-response-format) · [§4](docs/protocol.en.md#4-initialization-sequences) · [§10](docs/protocol.en.md#10-not-yet-reverse-engineered) |
+| Why swipe / NCC / Bozorth3 / SigFM all fail | [comparison §5](docs/comparison.en.md#5-matcher-experiment-history-why-seven-schemes-all-failed-2026-09-12) |
+| Where the matcher comes from; coefficient extraction & validation | [windows-engine-tables](docs/windows-engine-tables.en.md) · [comparison §6](docs/comparison.en.md#6-the-windows-engine-port-the-endgame) |
+| How Windows does enrollment (origin of the same-spot reject) | [windows-enrollment](docs/windows-enrollment.en.md) |
+| How Windows actually drives the sensor (calibration cache, duty cycle) | protocol §4C session order · §7 online behavior ([docs/protocol.en.md](docs/protocol.en.md)) |
+| Stability: pitfalls, watchdogs, hang recovery | [protocol §8](docs/protocol.en.md#8-known-pitfalls-all-verified-on-hardware-2026-09-1213) · [comparison §7](docs/comparison.en.md#7-stability-engineering-results-all-hardware-verified) |
+| How the enrollment similarity threshold was calibrated | [enroll-sim-calibration.txt](docs/enroll-sim-calibration.txt) · [calibrate-enroll-sim.py](scripts/calibrate-enroll-sim.py) |
+| Optimization roadmap & completed items | [optimization-plan.md](docs/optimization-plan.md) (Chinese working doc) |
+
+The bilingual document index lives in [docs/README.md](docs/README.md).
+
 ## Key findings at a glance
 
 1. The EH575 is an **image sensor** (tiny 103×52 frames, host-side
    matching, **no dead columns**) — not match-on-chip
+   ([protocol §3](docs/protocol.en.md#3-image-geometry-settled))
 2. swipe+Bozorth3 (the topni1 driver) is the root cause of the poor
    accuracy; every classic matching scheme (NCC / Bozorth3 / POC / SigFM
    / orientation field) **fails** to separate same-person cross-finger
-   attempts at this sensor's raw SNR (data in docs/comparison.en.md §5)
+   attempts at this sensor's raw SNR
+   ([comparison §5](docs/comparison.en.md#5-matcher-experiment-history-why-seven-schemes-all-failed-2026-09-12))
 3. This driver = EH577's press capture architecture + topni1's
    calibration init (a hard requirement for imaging on EH575) + the
    **Windows-engine matcher port** (11-orientation ridge matched-filter
    bank, 512-bit descriptors, Hamming/translation-cluster scoring, with
    coefficients extracted from the vendor DLL; small-sample offline
-   FRR/FAR 0%, on-hardware integration accepted)
+   FRR/FAR 0%, on-hardware integration accepted —
+   [comparison §6](docs/comparison.en.md#6-the-windows-engine-port-the-endgame))
 4. `01 01 01 → re-run PRE_INIT` is EH575's intended error handling
+   ([protocol §4B](docs/protocol.en.md#4-initialization-sequences))
 5. The topni1 `FPI_DEVICE_Egis0575` typo recorded earlier was re-checked
-   across that fork's whole history and **does not exist** (see
-   docs/comparison.en.md §8); nothing to report
+   across that fork's whole history and **does not exist**
+   ([comparison §8](docs/comparison.en.md#8-upstream-issues-found)); nothing
+   to report

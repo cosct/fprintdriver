@@ -1,6 +1,6 @@
 # 文档索引 / Documentation Index
 
-研究已完成，驱动发布于 [cosct/fprintdriver](https://github.com/cosct/fprintdriver)（libfprint/ 子树）
+研究已完成，驱动发布于 [cosct/libfprint-eh575](https://github.com/cosct/libfprint-eh575)（libfprint/ 子树）
 （AUR `libfprint-egis0575`）。每份文档提供中英双语：
 
 | 文档 / Document | 中文 | English |

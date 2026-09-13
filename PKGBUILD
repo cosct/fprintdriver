@@ -10,11 +10,11 @@
 #   makepkg -f -i
 
 pkgname=libfprint-egis0575
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc="EgisTec EH575 (1c7a:0575) fingerprint driver on current libfprint (fprintdriver research build)"
 arch=(x86_64)
-url="https://github.com/cosct/fprintdriver"
+url="https://github.com/cosct/libfprint-eh575"
 license=(LGPL-2.1-or-later)
 # vendored libfprint builds all drivers by default: uru4000 needs openssl
 # at build time and links libssl/libcrypto at runtime; nothing needs nss.

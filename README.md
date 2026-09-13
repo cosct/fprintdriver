@@ -1,4 +1,4 @@
-# fprintdriver — EgisTec EH575 (1c7a:0575) libfprint 驱动研究
+# libfprint-eh575 — EgisTec EH575 (1c7a:0575) Linux 指纹驱动
 
 > [English version](README.en.md)
 
@@ -52,7 +52,7 @@ Windows 驱动，版权归 EgisTec/Acer）。
 # 0) 一次性：clone 本仓库并构建（驱动源码已在树内 libfprint/）
 #    （需要 meson≥0.62 + ninja，以及 glib2/libusb/libgusb/pixman/openssl/
 #     libgudev 的开发包；Arch 上再加 gobject-introspection 和 gtk-doc）
-git clone https://github.com/cosct/fprintdriver && cd fprintdriver
+git clone https://github.com/cosct/libfprint-eh575 && cd libfprint-eh575
 meson setup libfprint/builddir libfprint
 meson compile -C libfprint/builddir
 
@@ -90,17 +90,34 @@ Python 脚本依赖见 `requirements.txt`（Python ≥ 3.9 + numpy；eval_sigfm
 另需 OpenCV，hwpoll 另需 pyusb）。本仓库（文档/脚本/工具）与驱动同样
 按 LGPL-2.1-or-later 授权（见 `LICENSE`）。
 
+## 深入阅读地图（问题 → 章节）
+
+| 想了解 | 去处 |
+|---|---|
+| 线协议与命令语义（CET300 命令集、初始化序列、未解项） | [protocol §2 命令与响应格式](docs/protocol.md#2-命令与响应格式) · [§4 初始化序列](docs/protocol.md#4-初始化序列) · [§10 尚未逆向的部分](docs/protocol.md#10-尚未逆向的部分) |
+| 为什么 swipe/NCC/Bozorth3/SigFM 全不行 | [comparison §5 匹配器实验史：七个方案为何全败](docs/comparison.md#5-匹配器实验史七个方案为何全败2026-09-12) |
+| 匹配器从哪来、系数提取与验证数字 | [windows-engine-tables](docs/windows-engine-tables.md) · [comparison §6 Windows 引擎移植：终局方案](docs/comparison.md#6-windows-引擎移植终局方案) |
+| Windows 怎么做录入（同点拒绝的出处） | [windows-enrollment](docs/windows-enrollment.md) |
+| Windows 实际怎么用传感器（校准缓存、占空比） | protocol §4C 会话实序 · §7 在线行为实证（[docs/protocol.md](docs/protocol.md)） |
+| 稳定性：陷阱清单、看门狗、挂死恢复 | [protocol §8 已知陷阱](docs/protocol.md#8-已知陷阱全部真机验证2026-09-1213) · [comparison §7 稳定性工程](docs/comparison.md#7-稳定性工程成果全部真机验证) |
+| 录入相似阈值怎么标定 | [enroll-sim-calibration.txt](docs/enroll-sim-calibration.txt) · [calibrate-enroll-sim.py](scripts/calibrate-enroll-sim.py) |
+| 优化路线与已完成项 | [optimization-plan.md](docs/optimization-plan.md) |
+
+文档索引（双语对照）见 [docs/README.md](docs/README.md)。
+
 ## 关键结论速查
 
 1. EH575 是**图像传感器**（103×52 小图、主机侧匹配，**无死区列**），
-   不是 match-on-chip
+   不是 match-on-chip（几何定案见 [protocol §3](docs/protocol.md#3-图像几何已定案)）
 2. swipe+Bozorth3（topni1 驱动）是精度差的根源；经典匹配方案（NCC/
    Bozorth3/POC/SigFM/方向场）在本传感器原始信噪比下**全部**无法区分
-   同人异指（实验数据见 docs/comparison.md §5）
+   同人异指（[comparison §5](docs/comparison.md#5-匹配器实验史七个方案为何全败2026-09-12)）
 3. 本驱动 = EH577 的 press 采集架构 + topni1 校准初始化（EH575 出图
    必要条件）+ **Windows 引擎 matcher 移植**（11 取向脊线滤波器组 +
    512bit 描述子 + 海明/平移簇评分，系数实抽自 vendor DLL；小样本
-   离线 FRR/FAR 0%，真机集成验收通过）
+   离线 FRR/FAR 0%，真机集成验收通过，见
+   [comparison §6](docs/comparison.md#6-windows-引擎移植终局方案)）
 4. `01 01 01 → 重跑 PRE_INIT` 是 EH575 的本义错误处理
+   （[protocol §4B](docs/protocol.md#4-初始化序列)）
 5. 早前记录的 topni1 `FPI_DEVICE_Egis0575` 笔误经全历史复核**不存在**
-   （见 docs/comparison.md §8），无需回报
+   （[comparison §8](docs/comparison.md#8-已发现的上游问题)），无需回报

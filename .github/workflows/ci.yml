@@ -48,7 +48,7 @@ jobs:
           cat > /tmp/mt_main.c <<'EOF'
           #include <stdio.h>
           #include <stdlib.h>
-          #include "libfprint/drivers/egis0575-matcher.h"
+          #include "libfprint/libfprint/drivers/egis0575-matcher.h"
 
           int
           main (void)
@@ -75,5 +75,5 @@ jobs:
           }
           EOF
           cc -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-            -I. -o /tmp/mt_asan /tmp/mt_main.c libfprint/drivers/egis0575-matcher.c -lm
+            -I. -o /tmp/mt_asan /tmp/mt_main.c libfprint/libfprint/drivers/egis0575-matcher.c -lm
           /tmp/mt_asan

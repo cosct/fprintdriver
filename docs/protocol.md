@@ -2,7 +2,7 @@
 
 > **状态：已定案。** 本文档是 EH575 驱动开发的协议基准，全部条目经四源交叉验证，
 > 其中标"真机验证"的条目在 2026-09-12/13 真机会话中确认。驱动随
-> [cosct/fprintdriver](https://github.com/cosct/fprintdriver) 仓库分发
+> [cosct/libfprint-eh575](https://github.com/cosct/libfprint-eh575) 仓库分发
 > （`libfprint/` 子树）· AUR `libfprint-egis0575`。
 > [English version](protocol.en.md)
 
