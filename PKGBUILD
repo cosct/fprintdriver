@@ -16,9 +16,12 @@ pkgdesc="EgisTec EH575 (1c7a:0575) fingerprint driver on current libfprint (fpri
 arch=(x86_64)
 url="https://github.com/cosct/libfprint-egis0575"
 license=(LGPL-2.1-or-later)
-depends=(libusb libgusb nss pixman glib2)
-makedepends=(meson ninja git gobject-introspection)
-provides=(libfprint libfprint-2.so)
+# vendored libfprint builds all drivers by default: uru4000 needs openssl
+# at build time and links libssl/libcrypto at runtime; nothing needs nss.
+depends=(libusb libgusb openssl pixman glib2 libgudev)
+makedepends=(meson ninja git gobject-introspection gtk-doc)
+# 1.94.100 = bundled libfprint base; soversion 2 -> libfprint-2.so=2-64
+provides=(libfprint=1.94.100 libfprint-2.so=2-64)
 conflicts=(libfprint libfprint-egis-0575 libfprint-egis0575-experimental)
 replaces=(libfprint-egis-0575 libfprint-egis0575-experimental)
 options=(!strip)

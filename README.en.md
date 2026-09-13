@@ -31,14 +31,20 @@ docs/     Index in docs/README.md (bilingual): protocol wire-protocol
           endgame · windows-engine-tables coefficient extraction
 scripts/  Test and data-collection tooling (see below)
 tools/    Evaluation utilities (egis0575-matcher-test / eval_bz3 / hwpoll)
-PKGBUILD  Local development packaging (the AUR version lives on AUR)
+packaging/ Release recipes: aur/PKGBUILD (canonical AUR copy) ·
+          deb/build-deb.sh · rpm/egis0575.spec — invoked by the fork
+          repo's release workflow on egis0575-v* tags; artifacts are
+          attached to the GitHub Release and the AUR package is updated
+          automatically
+PKGBUILD  Local development packaging (builds from the working tree;
+          the AUR version lives on AUR)
 ```
 
 The driver source lives in its own repository (the local `libfprint/`
 directory is not distributed with this one):
 
 ```bash
-git clone -b egis0575 https://github.com/cosct/libfprint-egis0575
+git clone -b egis0575 https://github.com/cosct/libfprint-egis0575 libfprint
 ```
 
 Intentionally not distributed here (size or privacy): `refs/` (four
@@ -49,6 +55,14 @@ third-party reference implementations — clone them yourself),
 ## Reproducing the research workflow
 
 ```bash
+# 0) One-time: clone the driver source into ./libfprint/ (the path the
+#    scripts expect) and build it. (Needs meson>=0.62 + ninja plus dev
+#    packages for glib2/libusb/libgusb/pixman/openssl/libgudev; on Arch
+#    also gobject-introspection and gtk-doc.)
+git clone -b egis0575 https://github.com/cosct/libfprint-egis0575 libfprint
+meson setup libfprint/builddir libfprint
+meson compile -C libfprint/builddir
+
 # 1) One-time: install a temporary udev rule for direct device access
 #    (asks for the sudo password)
 ./scripts/setup-access.sh

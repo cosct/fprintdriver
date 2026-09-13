@@ -24,13 +24,16 @@ docs/     文档索引见 docs/README.md（中英双语）：
           windows-engine-tables 引擎系数表提取与复刻
 scripts/  测试与数据采集工具（见下）
 tools/    评测小工具（egis0575-matcher-test / eval_bz3 / hwpoll）
-PKGBUILD  本地开发打包（AUR 版本见 AUR 仓库）
+packaging/ 发布打包配方：aur/PKGBUILD（AUR 正本）· deb/build-deb.sh ·
+          rpm/egis0575.spec —— 由 fork 仓库的 release workflow 在打
+          egis0575-v* 标签时调用，产物挂 GitHub Release 并自动更新 AUR
+PKGBUILD  本地开发打包（从工作树构建；AUR 版本见 AUR 仓库）
 ```
 
 驱动源码在独立仓库（`libfprint/` 本地目录不随本仓库分发）：
 
 ```bash
-git clone -b egis0575 https://github.com/cosct/libfprint-egis0575
+git clone -b egis0575 https://github.com/cosct/libfprint-egis0575 libfprint
 ```
 
 不随仓库分发的内容（体积或隐私原因）：`refs/`（四份第三方参考实现，自行
@@ -40,6 +43,13 @@ Windows 驱动，版权归 EgisTec/Acer）。
 ## 复现研究流程
 
 ```bash
+# 0) 一次性：clone 驱动源码到 ./libfprint/（脚本约定的路径）并构建
+#    （需要 meson≥0.62 + ninja，以及 glib2/libusb/libgusb/pixman/openssl/
+#     libgudev 的开发包；Arch 上再加 gobject-introspection 和 gtk-doc）
+git clone -b egis0575 https://github.com/cosct/libfprint-egis0575 libfprint
+meson setup libfprint/builddir libfprint
+meson compile -C libfprint/builddir
+
 # 1) 一次性：装临时 udev 规则获得设备直连权限（要 sudo 密码）
 ./scripts/setup-access.sh
 
