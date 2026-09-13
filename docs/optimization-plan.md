@@ -7,7 +7,7 @@
 > 验证拒绝）与打包后的 fprintd 全链路复测。
 
 > 工作计划文档（非定案参考，暂不入双语索引）。
-> 依据：docs/protocol.md §2/§4C/§7（CET300 命令集、Windows 会话实序、
+> 依据：docs/protocol.md §2/§4C/§7（CET300 命令集、Windows 会话实际序列、
 > 校准持久化真相）、docs/windows-enrollment.md（Windows 录入机制）。
 > 每项标注来源、价值、风险、验收标准。
 

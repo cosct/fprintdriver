@@ -18,7 +18,7 @@ hardware-verified or source-traceable; open items live in
 
 | 文档 / Document | 一句话 / In one line | 中文 | English |
 |---|---|---|---|
-| 线协议 / Wire protocol | CET300 命令集全表、初始化/采集序列、Windows 会话实序与已知陷阱 / The full CET300 command set, init & capture sequences, the actual Windows session order, known pitfalls | [protocol.md](protocol.md) | [protocol.en.md](protocol.en.md) |
+| USB 通信协议 / USB wire protocol | CET300 命令集全表、初始化/采集序列、Windows 会话实际序列与已知陷阱 / The full CET300 command set, init & capture sequences, the actual Windows session order, known pitfalls | [protocol.md](protocol.md) | [protocol.en.md](protocol.en.md) |
 | 引擎系数提取 / Coefficient extraction | 从 vendor DLL 定位并提取 FIR/权重表的完整方法 / Locating and extracting the FIR/weight tables from the vendor DLL | [windows-engine-tables.md](windows-engine-tables.md) | [windows-engine-tables.en.md](windows-engine-tables.en.md) |
 | Windows 录入机制 / Enrollment mechanics | WBF 引擎适配器的采样数三层覆盖、逐帧三道门、20 个可调参数 / The WBF engine adapter's layered sample counts, per-frame gating, 20 tunables | [windows-enrollment.md](windows-enrollment.md) | [windows-enrollment.en.md](windows-enrollment.en.md) |
 

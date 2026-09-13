@@ -34,11 +34,11 @@
 | 想了解 | 去处 |
 |---|---|
 | 安装/构建依赖了什么 | 本页 [目录结构](#目录结构) · [复现研究流程](#复现研究流程) |
-| 线协议与命令语义（CET300 命令集、初始化序列、未解项） | [protocol §2 命令与响应格式](docs/protocol.md#2-命令与响应格式) · [§4 初始化序列](docs/protocol.md#4-初始化序列) · [§10 尚未逆向的部分](docs/protocol.md#10-尚未逆向的部分) |
+| USB 通信协议与命令语义（CET300 命令集、初始化序列、未解项） | [protocol §2 命令与响应格式](docs/protocol.md#2-命令与响应格式) · [§4 初始化序列](docs/protocol.md#4-初始化序列) · [§10 尚未逆向的部分](docs/protocol.md#10-尚未逆向的部分) |
 | 为什么 swipe/NCC/Bozorth3/SigFM 全不行 | [comparison §5 匹配器实验史：七个方案为何全败](docs/comparison.md#5-匹配器实验史七个方案为何全败2026-09-12) |
 | 匹配器从哪来、系数提取与验证数字 | [windows-engine-tables](docs/windows-engine-tables.md) · [comparison §6 Windows 引擎移植](docs/comparison.md#6-windows-引擎移植终局方案) |
 | Windows 怎么做录入（同点拒绝的出处） | [windows-enrollment](docs/windows-enrollment.md) |
-| Windows 实际怎么用传感器（校准缓存、占空比） | protocol §4C 会话实序 · §7 在线行为实证（[docs/protocol.md](docs/protocol.md)） |
+| Windows 实际怎么用传感器（校准缓存、占空比） | protocol §4C 会话实际序列 · §7 在线行为实证（[docs/protocol.md](docs/protocol.md)） |
 | 稳定性：陷阱清单、看门狗、挂死恢复 | [protocol §8 已知陷阱](docs/protocol.md#8-已知陷阱全部真机验证2026-09-1213) · [comparison §7 稳定性工程](docs/comparison.md#7-稳定性工程成果全部真机验证) |
 | 录入相似阈值怎么标定 | [enroll-sim-calibration.txt](docs/enroll-sim-calibration.txt) · [calibrate-enroll-sim.py](scripts/calibrate-enroll-sim.py) |
 | 优化路线与已完成项 | [optimization-plan.md](docs/optimization-plan.md) |
