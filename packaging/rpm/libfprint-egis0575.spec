@@ -61,7 +61,7 @@ udevadm hwdb --update || :
 udevadm hwdb --update || :
 
 %files
-%license COPYING
+%license libfprint/COPYING
 %{_libdir}/libfprint-2.so
 %{_libdir}/libfprint-2.so.*
 %{_libdir}/pkgconfig/libfprint-2.pc

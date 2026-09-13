@@ -17,7 +17,7 @@ options=(!debug)
 # vendored libfprint builds all drivers by default: uru4000 needs openssl
 # at build time and links libssl/libcrypto at runtime; nothing needs nss.
 depends=(libusb libgusb openssl pixman glib2 libgudev)
-makedepends=(meson ninja)
+makedepends=(meson ninja glib2-devel)
 # 1.94.100 = bundled libfprint base; soversion 2 -> libfprint-2.so=2-64
 provides=(libfprint=1.94.100 libfprint-2.so=2-64)
 conflicts=(libfprint libfprint-egis-0575 libfprint-egis0575-experimental)

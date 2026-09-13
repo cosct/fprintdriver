@@ -38,7 +38,7 @@ jobs:
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm --needed \
-            meson ninja git systemd-libs pacman-contrib \
+            meson ninja git systemd-libs pacman-contrib glib2-devel \
             libusb libgusb openssl pixman glib2 libgudev
       - name: Build package
         run: |
@@ -69,9 +69,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build package
         run: |
+          # the base bookworm container has no curl; build-deb.sh installs
+          # the rest of its own build deps
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
           # pin the tag tarball: build-deb.sh verifies this checksum on its
           # own download
           SHA=$(curl -fsSL --retry 3 "https://github.com/cosct/libfprint-eh575/archive/refs/tags/egis0575-v$VER.tar.gz" | sha256sum | cut -d' ' -f1)
+          test -n "$SHA"
           bash packaging/deb/build-deb.sh "$VER" "$SHA"
       - uses: actions/upload-artifact@v4
         with:
@@ -172,7 +176,7 @@ jobs:
           # openssh first: the preflight below needs the ssh binary
           # (archlinux:base-devel ships neither git nor openssh)
           pacman -Syu --noconfirm --needed openssh git \
-            pacman-contrib meson ninja gobject-introspection gtk-doc systemd-libs \
+            pacman-contrib meson ninja gobject-introspection gtk-doc glib2-devel systemd-libs \
             libusb libgusb openssl pixman glib2 libgudev
 
           # 'help' is a real command in AUR's restricted shell: exit 0 only
