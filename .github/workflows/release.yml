@@ -70,7 +70,7 @@ jobs:
           repository: cosct/fprintdriver
           path: research
       - name: Build package
-        run: research/packaging/deb/build-deb.sh "$VER"
+        run: bash research/packaging/deb/build-deb.sh "$VER"
       - uses: actions/upload-artifact@v4
         with:
           name: deb-package
