@@ -1,6 +1,7 @@
 # Python 工具依赖（Python ≥ 3.9：scripts/extract_egis_tables.py 用了
-# Path.is_relative_to）。按需安装：只跑 analyze-*/egis_matcher 装 numpy 即可，
-# eval_sigfm 需要 OpenCV，hwpoll 需要 pyusb。
+# Path.is_relative_to）。按需安装：只跑 analyze-* 装 numpy 即可，
+# egis_matcher.py（特征提取必经 cv2）与 eval_sigfm 需要 OpenCV，
+# hwpoll 需要 pyusb。
 numpy>=1.20
-opencv-python>=4.5   # scripts/eval_sigfm.py（egis_matcher.py 仅可选使用）
+opencv-python>=4.5   # scripts/eval_sigfm.py 与 scripts/egis_matcher.py（extract 硬依赖）
 pyusb>=1.2           # tools/hwpoll.py

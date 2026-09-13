@@ -13,3 +13,9 @@ cross-press（同会话跨按压=同指，应入池）: n=39 min=0 p10=0 p25=0 p
 阈值候选 424（P90（保守））: same-press 被拒 311/312, cross-press 误杀 5/39
 
 建议：两分布分离时取 cross-press 最大值之上；分离不足时退 P90。驱动侧 EGIS0575_ENROLL_SIM_THRESHOLD 可调，0=关闭。
+
+落地取舍（643 → 650）：代码取 650 而非头号候选 643。643 是零误杀下界
+（恰在实测 cross-press 最大值 642 之上 1 分），650 在其上再留 7 分余量
+吸收分布尾部（另一台机器 / 长期漂移），两值的 cross-press 误杀同为 0/39，
+对 same-press 拒绝率的影响可忽略。见 egis0575.c 的
+EGIS0575_ENROLL_SIM_THRESHOLD_DEFAULT 注释。

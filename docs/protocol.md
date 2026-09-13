@@ -68,7 +68,7 @@ championswimmer EH577 工程（2026-06 最新）、python-egistec-eh575（独立
 ### A. 校准流程（topni1 流程；EH575 出图的**必要条件**，生产路径）
 
 ```
-A. 读校准（每次 open 重新读，不持久化）
+A. 读校准（首次 open 现场读取；之后主机侧缓存、跨 close 复用，见 §4C/§7）
    1. PHASE_1（16 包，含寄存器配置 + AGC 设置）
    2. 轮询 60 2d 直到 resp[5]==0x05
    3. PHASE_3（2 包：62 67 03 / 63 33 03 73 10 01）
@@ -120,9 +120,10 @@ Windows 完整会话初始化只有 **8 条命令 + 5356 字节校准上传**，
 均为 0。传感器上电后固件自行运行内置标定（DLL 字符串佐证：
 fp_tz_secure_pre_calibrate、tz_calibrate_dvr、et5xx_calibrate_bad_pixel、
 Zone1/Zone2 坏点统计、vdm hw/target mean），topni1 的 A 链正是把这个
-结果读出来（72）再显式回传。我们的驱动与 topni1 同型（每 open 现读现传）；
-若追求 Windows 级会话启动速度，可在主机侧缓存校准块 + 失效策略
-（传感器健康看门狗触发时重读），这是可选优化而非正确性问题。
+结果读出来（72）再显式回传。我们的驱动最初与 topni1 同型（每 open 现读现传）；v0.2.1 起已实现
+主机侧校准块缓存：校准块跨 close 保留（传感器健康看门狗触发、损坏
+检测、dispose 时丢弃），后续 open 直接经 73 14 ec 回传、无需重跑读链，
+失效策略为看门狗触发时重读——与 Windows 同型（见 §7）。
 
 ## 5. 采集循环
 
@@ -181,7 +182,8 @@ Zone1/Zone2 坏点统计、vdm hw/target mean），topni1 的 A 链正是把这�
 
 ## 9. 系统级验收（2026-09-13 00:39）
 
-传感器健康态下 fprintd 全链路：`probes=1 best_score=1086/300 => MATCH`，
+传感器健康态下 fprintd 全链路：`probes=1 best_score=1086/300 => MATCH`
+（修复前引擎 + 旧阈值 300——现行阈值 335，见 windows-engine-tables §7），
 coverage 51%。早退判定（~2s）+ 多 probe 收集 + 双帧一致判定全部生效
 （matcher 细节与阈值标定见 windows-engine-tables.md）。
 

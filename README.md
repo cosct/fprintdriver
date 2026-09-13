@@ -21,7 +21,8 @@
 - **驱动已可用**：press 采集架构 + Windows 引擎 matcher 移植，真机
   （KDE 锁屏 / fprintd / Bitwarden polkit 解锁）验证通过；匹配器验证
   数字（小样本单机：离线 6 同人/12 异人 FRR/FAR 0%，真机冒充分离余量
-  15）见 [comparison §6](docs/comparison.md#6-windows-引擎移植终局方案)
+  47——重标定后（阈值 335 vs 峰值 288）；修复前旧引擎为 15，已作废）见
+  [comparison §6/§9](docs/comparison.md#6-windows-引擎移植终局方案)
 - **v0.2.1 优化**：录入同点重复拒绝（Windows HIGHLY_SIMILARITY 移植，
   阈值 650 真机验证拦截精准）、校准块跨 close 主机缓存（Windows 同型）、
   两档空闲轮询（230/500ms）
@@ -83,8 +84,8 @@ meson compile -C libfprint/builddir
 python3 scripts/analyze-columns.py datasets/press-test-*/
 ```
 
-Python 脚本依赖见 `requirements.txt`（Python ≥ 3.9 + numpy；eval_sigfm
-另需 OpenCV，hwpoll 另需 pyusb）。本仓库（文档/脚本/工具）与驱动同样
+Python 脚本依赖见 `requirements.txt`（Python ≥ 3.9 + numpy；
+egis_matcher.py 的特征提取与 eval_sigfm 需 OpenCV，hwpoll 另需 pyusb）。本仓库（文档/脚本/工具）与驱动同样
 按 LGPL-2.1-or-later 授权（见 `LICENSE`）。
 
 ### 驱动可调环境变量
@@ -111,13 +112,14 @@ docs/     文档索引见 docs/README.md（中英双语，按板块组织）
 libfprint/ 驱动源码（git subtree：upstream libfprint 完整历史 + egis0575
           驱动，LGPL-2.1+）；构建目录 builddir/ 不入库
 scripts/  测试与数据采集工具（probe / 采集 / 分析 / 标定）
-tools/    评测小工具（egis0575-matcher-test / eval_bz3 / hwpoll，make 构建）
+tools/    评测小工具（egis0575-matcher-test / eval_bz3 两个 C 工具 make 构建；
+          hwpoll 为 Python 脚本）
 packaging/ 发布打包配置：aur/PKGBUILD（AUR 版本的权威来源）· deb/build-deb.sh ·
           rpm/libfprint-egis0575.spec —— release workflow 在打
           egis0575-v* 标签时调用，产物上传至 GitHub Release 并自动更新 AUR
 PKGBUILD  本地开发打包（从工作树构建；AUR 版本见 AUR 仓库）
 ```
 
-不随仓库分发的内容（体积或隐私原因）：`refs/`（四份第三方参考实现，自行
+不随仓库分发的内容（体积或隐私原因）：`refs/`（六份第三方参考实现，自行
 clone）、`datasets/`（指纹原始帧，生物特征数据）、`acerdrv/`（Acer 官方
 Windows 驱动，版权归 EgisTec/Acer）。

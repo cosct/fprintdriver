@@ -2,8 +2,8 @@
 
 > **Status: complete.** All coefficient tables were extracted; the Python
 > replica achieved perfect offline separation; the C port ships with the
-> driver [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)（libfprint/ 子树）
-> v0.2.0 (`egis0575-matcher.c`). This document is the full lab record,
+> driver [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575) (libfprint/ subtree)
+> v0.2.1 (`egis0575-matcher.c`). This document is the full lab record,
 > kept for review and future enhancements.
 > [中文版](windows-engine-tables.md)
 
@@ -106,7 +106,8 @@ agreement, naturally filtered by the dual condition.
   verdict ~2 s); left-index impostor = 285, correctly rejected. These were
   measured with the pre-fix engine and v0 templates (orientation lost on
   reload) and must be re-validated with re-enrollment
-- **System level** (full fprintd chain, 00:39): `probes=1
+- **System level** (full fprintd chain, 00:39; pre-fix engine + old
+  threshold 300 — the current threshold is 335): `probes=1
   best_score=1086/300 => MATCH`, coverage 51%
 - Not ported from the original Windows engine: the adaptive threshold-660
   scheme (−80/+60, 1.5× cap) and verification-time template feedback

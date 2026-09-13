@@ -2,7 +2,7 @@
 
 > **状态：研究收官。** 架构决策全部定案并落地为已发布驱动
 > [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)（libfprint/ 子树）
-> v0.2.0（AUR `libfprint-egis0575`）。本文保留完整决策链与实验证据。
+> v0.2.1（AUR `libfprint-egis0575`）。本文保留完整决策链与实验证据。
 > [English version](comparison.en.md)
 
 ## 1. 架构总览
@@ -134,7 +134,7 @@ C 移植入驱动（`egis0575-matcher.c`，纯 C 无 GLib，独立可测）。
 - **真机集成验收**（2026-09-13，修复前引擎 + v0 模板）：右食指 ×3 =
   622/404/381 全 MATCH（早退判定 ~2s）；左食指冒充 = 285 正确拒绝。
   修复引擎与 v1 模板（恢复取向字段）下需重录重验
-- **系统级**（fprintd 全链路）：`probes=1 best_score=1086/300 => MATCH`
+- **系统级**（fprintd 全链路，修复前引擎 + 旧阈值 300——现行阈值 335，见 §9；待重测）：`probes=1 best_score=1086/300 => MATCH`
 
 **证据强度**：以上为小样本单机验证——6 个同人按压组 / 12 个异人比较、
 阈值在同一批数据上调出、单台 EH575 机型；未做独立留出集、多机型与

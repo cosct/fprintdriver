@@ -2,7 +2,7 @@
 
 > **状态：完成。** 系数表全部提取，Python 复刻达到离线完美分离，C 移植
 > 已随驱动 [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)（libfprint/ 子树）
-> v0.2.0 发布（`egis0575-matcher.c`）。本文是完整实验记录，供复核与
+> v0.2.1 发布（`egis0575-matcher.c`）。本文是完整实验记录，供复核与
 > 后续增强。
 > [English version](windows-engine-tables.en.md)
 
@@ -90,8 +90,8 @@
 - **真机集成**（2026-09-13 凌晨，修复前引擎 + v0 模板）：右食指 ×3 =
   622/404/381 全 MATCH（早退判定 ~2s）；左食指冒充 = 285 正确拒绝。
   该组数字在修复引擎与 v1 模板（恢复取向字段）下失效，需重录重验
-- **系统级**（fprintd 全链路，00:39）：`probes=1 best_score=1086/300
-  => MATCH`，coverage 51%
+- **系统级**（fprintd 全链路，00:39，修复前引擎 + 旧阈值 300——现行
+  335）：`probes=1 best_score=1086/300 => MATCH`，coverage 51%
 - 与 Windows 原版差异（未移植）：阈值 660 自适应（−80/+60 封顶 1.5x）、
   验证期模板回馈（加密注册表 blob 'AE'，密钥 DAT_180038248）
 

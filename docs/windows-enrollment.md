@@ -104,20 +104,22 @@ CreateEnrollment 里采样数不是常量，而是三层配置的叠加：
 |---|---|---|
 | 目标帧数 10/16（型号默认+注册表覆盖） | 固定 12（`EGIS0575_ENROLL_FRAMES`） | 数量级一致，无需改 |
 | 逐帧提取质量门（iResult + RejectDetail） | Stage-2 质量门（grain/ridge/minutiae） | 已有，语义等价 |
-| **HIGHLY_SIMILARITY：同位置重复帧不入池** | 无——12 帧可全部来自同一按压点，模板库覆盖退化 | **最值得移植**（见下） |
+| **HIGHLY_SIMILARITY：同位置重复帧不入池** | 已移植（v0.2.1）：新帧对已录帧 `egis0575_m_score` ≥ 650 即拒绝入池、不推进阶段，连续拒绝 4 次后放行保底（`EGIS0575_ENROLL_SIM_THRESHOLD` 可调、0 关闭） | 完成：真机标定同人同按压 p10=1889 vs 跨按压最大 642，0% 误杀（`enroll-sim-calibration.txt`） |
 | 变长录入（MIN/MAX_ENROLL_COUNT + MAX_ENROLL_TRY） | 固定 12 阶段 | libfprint 的 `nr_enroll_stages` 为类初始化时静态值，变长需改框架，上游不可行；12 阶段 + 坏帧不推进（现状）已近似 |
 | 模板 = 逐帧特征池化 | 12 帧特征模板库 | 同构 ✓ |
 | Commit 前存储容量检查 | fprintd 侧管理 | 不适用 |
 | 验证期模板回馈（169959B 'AE' blob） | 未移植（已有记录） | P2 遗留 |
 | 注册表 20 参数可调面 | 驱动 env vars | 研究等价物已够用 |
 
-**建议移植（P1）——录入相似帧拒绝**：在 `on_frame_accepted_enroll` 将
-特征并入模板库前，用现成的 `egis0575_m_score` 对新帧与已录各帧打分；超过
-相似阈值（如单帧分 ≥ AGREE_SCORE 的 1.5 倍量级，需实验标定）时不入模板库、
-不推进阶段，通过 `fpi_device_enroll_progress` 报
-`FP_DEVICE_RETRY_CENTER_FINGER` 类重试错误提示用户换位置。效果：12 帧
-模板库的位置覆盖显著提升，直接对标 Windows 的 HIGHLY_SIMILARITY +
-REDUNDANT 族，且不触碰 libfprint 框架约束。
+**已移植（随 v0.2.1 发布）——录入相似帧拒绝**：`on_frame_accepted_enroll`
+在特征并入模板库前，用现成的 `egis0575_m_score` 对新帧与已录各帧打分；
+相似分 ≥ 650（真机标定阈值，`EGIS0575_ENROLL_SIM_THRESHOLD` 可调，见
+`enroll-sim-calibration.txt`）时不入模板库、不推进阶段，通过
+`fpi_device_enroll_progress` 报 `FP_DEVICE_RETRY_GENERAL` 重试错误提示
+用户换位置；连续拒绝达 `EGIS0575_ENROLL_SIM_MAX_REJECTS`（4）次后放行，
+保录入可完成（对标 Windows 的 MAX_ENROLL_TRY）。效果：12 帧模板库的
+位置覆盖显著提升，直接对标 Windows 的 HIGHLY_SIMILARITY + REDUNDANT 族，
+且不触碰 libfprint 框架约束。
 
 ## 7. 证据索引
 

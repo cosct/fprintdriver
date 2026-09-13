@@ -29,8 +29,10 @@ docs/. The end goal is a driver submittable to
   port, verified on real hardware (KDE lock screen / fprintd / Bitwarden
   polkit unlock). Matcher validation numbers (small-sample,
   single-machine: offline 6-genuine / 12-impostor FRR/FAR 0%,
-  on-hardware impostor separation margin 15) in
-  [comparison §6](docs/comparison.en.md#6-the-windows-engine-port-the-endgame)
+  on-hardware impostor separation margin
+  47 — post-recalibration (threshold 335 vs peak 288); the pre-fix
+  engine's 15 is superseded) in
+  [comparison §6/§9](docs/comparison.en.md#6-the-windows-engine-port-the-endgame)
 - **v0.2.1 optimizations**: enrollment same-spot rejection (the Windows
   HIGHLY_SIMILARITY port, threshold 650, verified precise on hardware),
   host-side calibration cache surviving close (Windows-shaped), and
@@ -108,7 +110,8 @@ python3 scripts/analyze-columns.py datasets/press-test-*/
 ```
 
 Python-script dependencies are listed in `requirements.txt` (Python ≥ 3.9
-+ numpy; eval_sigfm also needs OpenCV, hwpoll needs pyusb). This
++ numpy; egis_matcher.py's feature extraction and eval_sigfm need
+OpenCV; hwpoll needs pyusb). This
 repository (docs/scripts/tools) is licensed LGPL-2.1-or-later like the
 driver (see `LICENSE`).
 
@@ -143,8 +146,8 @@ libfprint/ Driver source (git subtree: full upstream libfprint history +
           not committed
 scripts/  Test and data-collection tooling (probe / capture / analysis /
           calibration)
-tools/    Evaluation utilities (egis0575-matcher-test / eval_bz3 /
-          hwpoll; built via make)
+tools/    Evaluation utilities (egis0575-matcher-test / eval_bz3 —
+          two C tools built via make; hwpoll is a Python script)
 packaging/ Release recipes: aur/PKGBUILD (canonical AUR copy) ·
           deb/build-deb.sh · rpm/libfprint-egis0575.spec — invoked by
           the release workflow on egis0575-v* tags; artifacts are
@@ -154,7 +157,7 @@ PKGBUILD  Local development packaging (builds from the working tree;
           the AUR version lives on AUR)
 ```
 
-Intentionally not distributed here (size or privacy): `refs/` (four
+Intentionally not distributed here (size or privacy): `refs/` (six
 third-party reference implementations — clone them yourself),
 `datasets/` (raw fingerprint frames — biometric data), and `acerdrv/`
 (Acer's official Windows driver — copyright EgisTec/Acer).

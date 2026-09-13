@@ -2,8 +2,8 @@
 
 > **Status: research concluded.** All architecture decisions are settled and
 > shipped in the published driver
-> [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)（libfprint/ 子树）
-> v0.2.0 (AUR `libfprint-egis0575`). This document preserves the full
+> [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575) (libfprint/ subtree)
+> v0.2.1 (AUR `libfprint-egis0575`). This document preserves the full
 > decision chain and the experimental evidence.
 > [中文版](comparison.md)
 
@@ -162,8 +162,9 @@ GLib, independently testable).
   ~2 s); left-index impostor = 285, correctly rejected. Must be re-run with
   the fixed engine and v1 templates (orientation restored) after
   re-enrollment
-- **System level** (full fprintd chain): `probes=1 best_score=1086/300
-  => MATCH`
+- **System level** (full fprintd chain; pre-fix engine + old threshold
+  300 — the current threshold is 335, see §9; to be re-measured):
+  `probes=1 best_score=1086/300 => MATCH`
 
 **Evidence strength**: the numbers above are a small-sample, single-machine
 validation — 6 genuine press sets / 12 impostor comparisons, threshold

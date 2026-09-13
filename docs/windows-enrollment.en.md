@@ -115,23 +115,26 @@ Defaults are set per sensor model in the engine-core constructor
 |---|---|---|
 | Target 10/16 frames (model default + registry) | Fixed 12 (`EGIS0575_ENROLL_FRAMES`) | same order; no change needed |
 | Per-frame extraction quality gate | Stage-2 gate (grain/ridge/minutiae) | present, equivalent |
-| **HIGHLY_SIMILARITY: same-spot repeats not pooled** | None — all 12 frames can come from one spot, degrading gallery coverage | **most worth porting** (below) |
+| **HIGHLY_SIMILARITY: same-spot repeats not pooled** | Ported (v0.2.1): a new frame scoring >= 650 (`egis0575_m_score`) against any pooled frame is rejected — not pooled, stage does not advance — with a 4-consecutive-reject bail-out (`EGIS0575_ENROLL_SIM_THRESHOLD` tunable, 0 disables) | done: on-hardware calibration same-press p10=1889 vs cross-press max 642, 0% misreject (`enroll-sim-calibration.txt`) |
 | Variable-length enrollment (MIN/MAX + MAX_TRY) | Fixed 12 stages | libfprint's `nr_enroll_stages` is static at class init; variable length needs framework changes, not upstreamable. 12 stages + rejected frames not advancing (current behavior) approximates it |
 | Template = pooled per-frame features | 12-frame feature gallery | isomorphic ✓ |
 | Storage capacity check before commit | managed by fprintd | N/A |
 | Verification-time template feedback (169959-B 'AE' blob) | not ported (already recorded) | P2 open item |
 | Registry-tunable 20-parameter surface | driver env vars | research equivalents suffice |
 
-**Recommended port (P1) — enrollment similarity rejection**: before
-`on_frame_accepted_enroll` pools a frame's features, score the new frame
-against every already-pooled frame with the existing `egis0575_m_score`;
-above a similarity threshold (on the order of 1.5× AGREE_SCORE — to be
-calibrated experimentally), skip pooling and stage advance and report a
-retry error (`FP_DEVICE_RETRY_CENTER_FINGER`-style) via
-`fpi_device_enroll_progress` so the user moves their finger. Effect:
-markedly better position coverage of the 12-frame gallery — the direct
-equivalent of Windows' HIGHLY_SIMILARITY + REDUNDANT family — without
-touching any libfprint framework constraint.
+**Ported (shipped in v0.2.1) — enrollment similarity rejection**: before
+`on_frame_accepted_enroll` pools a frame's features, the driver scores the
+new frame against every already-pooled frame with the existing
+`egis0575_m_score`; at similarity >= 650 (the on-hardware calibrated
+threshold, tunable via `EGIS0575_ENROLL_SIM_THRESHOLD` — see
+`enroll-sim-calibration.txt`) it skips pooling and stage advance and reports
+a retry error (`FP_DEVICE_RETRY_GENERAL`) via `fpi_device_enroll_progress`
+so the user moves their finger; after
+`EGIS0575_ENROLL_SIM_MAX_REJECTS` (4) consecutive rejects it accepts
+anyway, keeping enrollment finishable (the Windows MAX_ENROLL_TRY
+analogue). Effect: markedly better position coverage of the 12-frame
+gallery — the direct equivalent of Windows' HIGHLY_SIMILARITY +
+REDUNDANT family — without touching any libfprint framework constraint.
 
 ## 7. Evidence index
 

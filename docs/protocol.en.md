@@ -89,7 +89,7 @@ implementation).
 ### A. Calibration flow (topni1's flow; **required** for EH575 imaging — production path)
 
 ```
-A. Read calibration (re-read on every open, not persisted)
+A. Read calibration (fresh read on first open; cached host-side across closes afterwards — see §4C/§7)
    1. PHASE_1 (16 packets: register config + AGC settings)
    2. Poll 60 2d until resp[5]==0x05
    3. PHASE_3 (2 packets: 62 67 03 / 63 33 03 73 10 01)
@@ -153,10 +153,11 @@ sensor firmware runs its own built-in calibration (corroborated by the
 DLL's strings: fp_tz_secure_pre_calibrate, tz_calibrate_dvr,
 et5xx_calibrate_bad_pixel, Zone1/Zone2 bad-pixel statistics,
 vdm hw/target mean); topni1's route A simply reads that result out (72)
-and feeds it back explicitly. Our driver is topni1-shaped (fresh read and
-upload per open); caching the block host-side with an invalidation policy
-(reread on sensor-health-watchdog triggers) would match Windows' session
-start speed — an optional optimization, not a correctness issue.
+and feeds it back explicitly. This driver originally followed topni1's shape (fresh read and upload per
+open); as of v0.2.1 the calibration block is cached host-side: it survives
+close (dropped by the watchdog/broken-check/dispose paths) and later opens
+re-upload it directly via 73 14 ec, with the sensor-health watchdog as the
+invalidation trigger (Windows-shaped; see §7).
 
 ## 5. Capture loop
 
@@ -234,7 +235,9 @@ manual `scripts/reset-sensor.sh`.
 ## 9. System-level acceptance (2026-09-13 00:39)
 
 With the sensor healthy, the full fprintd chain: `probes=1
-best_score=1086/300 => MATCH`, coverage 51%. Early-exit verdict (~2 s),
+best_score=1086/300 => MATCH` (pre-fix engine + old threshold 300 —
+the current threshold is 335; see windows-engine-tables §7),
+coverage 51%. Early-exit verdict (~2 s),
 multi-probe collection, and the dual-frame agreement rule all work (see
 windows-engine-tables.md for the matcher and its threshold calibration).
 
