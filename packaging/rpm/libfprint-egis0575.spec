@@ -2,6 +2,7 @@
 # Research project: https://github.com/cosct/fprintdriver
 # Release CI builds this spec with --define "version <driver-version>".
 %define drvver %{?version}%{!?version:0.2.0}
+%define debug_package %{nil}
 # libfprint base bundled with the driver (root meson.build version:)
 %define lfver 1.94.100
 
