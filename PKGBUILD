@@ -29,7 +29,9 @@ options=(!strip)
 
 prepare() {
   rm -rf "$srcdir/libfprint"
-  cp -a "$startdir/libfprint" "$srcdir/libfprint"
+  # dirname-of-srcdir == the directory makepkg was invoked from ($startdir
+  # is deprecated since makepkg 7.1)
+  cp -a "$(dirname "$srcdir")/libfprint" "$srcdir/libfprint"
   rm -rf "$srcdir/libfprint/builddir" "$srcdir/libfprint/builddir-verify"
 }
 

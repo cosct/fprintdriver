@@ -25,8 +25,10 @@ replaces=(libfprint-egis-0575 libfprint-egis0575-experimental)
 # tag tarballs come from the libfprint-egis0575 repository; the meson
 # source tree is the libfprint/ subtree inside it
 source=("$pkgname-$pkgver.tar.gz::https://github.com/cosct/libfprint-egis0575/archive/refs/tags/egis0575-v$pkgver.tar.gz")
-# refreshed by the release CI (updpkgsums) when the tag is cut
-sha256sums=('SKIP')
+# the hash below pins the pkgver tarball so a direct build from this repo
+# copy verifies its download; the release CI (updpkgsums) refreshes it for
+# each new tag, where the tarball — and therefore the hash — changes
+sha256sums=('b5d1994bed676bea3a98241f7943c8ce0e7c6aa1f5c3f08ba01e18c9dd04adbb')
 
 build() {
   # align with the deb/rpm builds: no docs, introspection or installed tests.

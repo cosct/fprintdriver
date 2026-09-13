@@ -10,8 +10,8 @@ set -eu
 
 VER="${1:?usage: build-deb.sh <version> [sha256]}"
 TAG="egis0575-v$VER"
-# single-repo layout: tag tarballs come from the libfprint-egis0575 repository and
-# extract to fprintdriver-<tag>/ with the meson tree in libfprint/
+# single-repo layout: tag tarballs come from the libfprint-egis0575 repository
+# and extract to libfprint-egis0575-<tag>/ with the meson tree in libfprint/
 SRC="libfprint-egis0575-$TAG"
 # The deb version carries the bundled libfprint base so that
 # Provides: libfprint-2-2 (= $LFVER) stays Debian-policy-compliant
@@ -21,10 +21,14 @@ FULLVER="$LFVER+egis0575.$VER"
 
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
-  build-essential meson ninja-build ca-certificates curl xz-utils dpkg-dev \
+  build-essential meson ninja-build ca-certificates curl xz-utils dpkg-dev file \
   libglib2.0-dev libgusb-dev libpixman-1-dev libusb-1.0-0-dev libudev-dev libssl-dev libgudev-1.0-dev
 
 DEBARCH=$(dpkg-architecture -qDEB_HOST_ARCH)
+
+# start from a clean slate so a local re-run never folds stale stage/ files
+# into the package or trips meson setup on an already-configured builddir
+rm -rf stage "$SRC" "$TAG.tar.gz"
 
 curl -fsSLO "https://github.com/cosct/libfprint-egis0575/archive/refs/tags/$TAG.tar.gz"
 if [ $# -ge 2 ]; then
@@ -43,6 +47,10 @@ meson setup "$SRC/build" "$SRC/libfprint" --prefix=/usr -D introspection=false -
 meson compile -C "$SRC/build"
 DESTDIR="$PWD/stage" meson install -C "$SRC/build"
 
+# strip ELF binaries and libraries (matching what makepkg does for the AUR
+# package); non-ELF files in the tree are left untouched
+find stage -type f -exec sh -c 'file -b "$1" | grep -q "^ELF" && strip --strip-unneeded "$1"' _ {} \; || true
+
 mkdir -p stage/DEBIAN
 cat > stage/DEBIAN/control <<EOF
 Package: libfprint-egis0575
@@ -51,7 +59,7 @@ Section: libs
 Priority: optional
 Architecture: $DEBARCH
 Maintainer: cosct <cosct@outlook.com>
-Depends: libglib2.0-0, libgusb2, libpixman-1-0, libusb-1.0-0, libgudev-1.0-0, libssl3 | libssl3t64
+Depends: libc6, libglib2.0-0, libgusb2, libpixman-1-0, libusb-1.0-0, libgudev-1.0-0, libssl3 | libssl3t64
 Provides: libfprint-2-2 (= $LFVER)
 Conflicts: libfprint-2-2, libfprint-2-dev
 Replaces: libfprint-2-2, libfprint-2-dev

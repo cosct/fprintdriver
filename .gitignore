@@ -14,6 +14,16 @@ pkg/
 *.pkg.tar.zst
 *.zip
 
+# 打包工作目录与产物（本地跑 build-deb.sh / 复现 CI 打包会留下）
+stage/
+*.deb
+*.rpm
+*.tar.gz
+/build/
+
+# 本地跑 libfprint 示例（enroll）落在当前目录的指纹图像
+enrolled.pgm
+
 # 工具与缓存
 .claude/
 .mimosa/

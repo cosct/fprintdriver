@@ -2,6 +2,8 @@ name: release
 
 # Builds deb/rpm/zst packages for an egis0575-v* tag, attaches them to a
 # GitHub Release, and updates the AUR package (libfprint-egis0575) via SSH.
+# Finally bumps the committed packaging metadata (root PKGBUILD, rpm spec,
+# AUR copy) on master so the repo's version files do not lag behind.
 # Single-repo layout: packaging recipes and the libfprint/ subtree live in
 # this repository; package sources point at this repo's tag tarballs.
 #
@@ -20,7 +22,14 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
+
+# Serialize releases (queue, never cancel an in-flight one): two overlapping
+# runs would race on the AUR git history (non-fast-forward) and on the
+# GitHub Release assets.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   build-arch:
@@ -28,9 +37,15 @@ jobs:
     container: archlinux:base-devel
     steps:
       - name: Derive version from tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "VER=${{ inputs.version }}" >> "$GITHUB_ENV"
+            if ! printf '%s' "$INPUT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version '$INPUT_VERSION' must be X.Y.Z (digits only)"
+              exit 1
+            fi
+            echo "VER=$INPUT_VERSION" >> "$GITHUB_ENV"
           else
             echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
           fi
@@ -60,9 +75,15 @@ jobs:
     container: debian:bookworm
     steps:
       - name: Derive version from tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "VER=${{ inputs.version }}" >> "$GITHUB_ENV"
+            if ! printf '%s' "$INPUT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version '$INPUT_VERSION' must be X.Y.Z (digits only)"
+              exit 1
+            fi
+            echo "VER=$INPUT_VERSION" >> "$GITHUB_ENV"
           else
             echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
           fi
@@ -74,7 +95,7 @@ jobs:
           apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
           # pin the tag tarball: build-deb.sh verifies this checksum on its
           # own download
-          SHA=$(curl -fsSL --retry 3 "https://github.com/cosct/libfprint-egis0575/archive/refs/tags/egis0575-v$VER.tar.gz" | sha256sum | cut -d' ' -f1)
+          SHA=$(curl -fsSL --retry 3 "https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/egis0575-v$VER.tar.gz" | sha256sum | cut -d' ' -f1)
           test -n "$SHA"
           bash packaging/deb/build-deb.sh "$VER" "$SHA"
       - uses: actions/upload-artifact@v4
@@ -87,9 +108,15 @@ jobs:
     container: fedora:42
     steps:
       - name: Derive version from tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "VER=${{ inputs.version }}" >> "$GITHUB_ENV"
+            if ! printf '%s' "$INPUT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version '$INPUT_VERSION' must be X.Y.Z (digits only)"
+              exit 1
+            fi
+            echo "VER=$INPUT_VERSION" >> "$GITHUB_ENV"
           else
             echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
           fi
@@ -102,11 +129,17 @@ jobs:
       - name: Build package
         run: |
           mkdir -p sources
-          URL="https://github.com/cosct/libfprint-egis0575/archive/refs/tags/egis0575-v$VER.tar.gz"
+          URL="https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/egis0575-v$VER.tar.gz"
           curl -fsSL --retry 3 -o "sources/egis0575-v$VER.tar.gz" "$URL"
           # verify the tarball against an independently re-downloaded copy
           EXPECTED=$(curl -fsSL --retry 3 "$URL" | sha256sum | cut -d' ' -f1)
           echo "$EXPECTED  sources/egis0575-v$VER.tar.gz" | sha256sum -c -
+          # the committed %changelog lags between releases; give the built
+          # RPM an entry for the CI-driven version when it is missing
+          SPEC=packaging/rpm/libfprint-egis0575.spec
+          if ! grep -q -- "- $VER-1" "$SPEC"; then
+            sed -i "s/^%changelog$/%changelog\\n* $(LC_ALL=C date -u '+%a %b %d %Y') cosct-ci <cosct@outlook.com> - $VER-1\\n- Built from tag egis0575-v$VER by the release workflow\\n/" "$SPEC"
+          fi
           rpmbuild -bb \
             --define "version $VER" \
             --define "_sourcedir $PWD/sources" \
@@ -121,38 +154,91 @@ jobs:
   release:
     needs: [build-arch, build-deb, build-rpm]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      # checkout first (its clean step must not wipe the downloaded
+      # artifacts) — the version-sync step at the end commits to master
+      - uses: actions/checkout@v4
+        with:
+          ref: master
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
       - name: Tag name
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             echo "TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
             echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
           else
-            echo "TAG=egis0575-v${{ inputs.version }}" >> "$GITHUB_ENV"
-            echo "VER=${{ inputs.version }}" >> "$GITHUB_ENV"
+            if ! printf '%s' "$INPUT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version '$INPUT_VERSION' must be X.Y.Z (digits only)"
+              exit 1
+            fi
+            echo "TAG=egis0575-v$INPUT_VERSION" >> "$GITHUB_ENV"
+            echo "VER=$INPUT_VERSION" >> "$GITHUB_ENV"
           fi
       - name: Create release and upload packages
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create -R cosct/libfprint-egis0575 "$TAG" --verify-tag --generate-notes \
-            --title "egis0575 driver $VER" || true
-          gh release upload -R cosct/libfprint-egis0575 "$TAG" ./*.pkg.tar.zst ./*.deb ./*.rpm --clobber
+          # create only when missing so re-runs stay idempotent, but let a
+          # genuine create failure fail the job instead of surfacing later
+          # at upload time
+          if ! gh release view -R "$GITHUB_REPOSITORY" "$TAG" > /dev/null 2>&1; then
+            gh release create -R "$GITHUB_REPOSITORY" "$TAG" --verify-tag --generate-notes \
+              --title "egis0575 driver $VER"
+          fi
+          gh release upload -R "$GITHUB_REPOSITORY" "$TAG" ./*.pkg.tar.zst ./*.deb ./*.rpm --clobber
+      - name: Sync committed version files
+        run: |
+          # CI builds are version-correct via env injection; this step keeps
+          # the committed copies from lagging behind releases: root PKGBUILD,
+          # the rpm spec (default + changelog) and the AUR recipe copy
+          # (pkgver + the real tag-tarball hash)
+          git config user.name "cosct-ci"
+          git config user.email "cosct@outlook.com"
+
+          sed -i "s/^pkgver=.*/pkgver=$VER/; s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+          SPEC=packaging/rpm/libfprint-egis0575.spec
+          sed -i "s/^%define drvver .*/%define drvver %{?version}%{!?version:$VER}/" "$SPEC"
+          if ! grep -q -- "- $VER-1" "$SPEC"; then
+            sed -i "s/^%changelog$/%changelog\\n* $(LC_ALL=C date -u '+%a %b %d %Y') cosct-ci <cosct@outlook.com> - $VER-1\\n- Released via the release workflow (tag egis0575-v$VER).\\n/" "$SPEC"
+          fi
+
+          SHA=$(curl -fsSL --retry 3 "https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$TAG.tar.gz" | sha256sum | cut -d' ' -f1)
+          test -n "$SHA"
+          sed -i "s/^pkgver=.*/pkgver=$VER/; s/^pkgrel=.*/pkgrel=1/; s/^sha256sums=.*/sha256sums=('$SHA')/" packaging/aur/PKGBUILD
+
+          if git diff --quiet; then
+            echo "Committed version files already at $VER."
+          else
+            git add PKGBUILD packaging/rpm/libfprint-egis0575.spec packaging/aur/PKGBUILD
+            git commit -m "chore: bump packaged versions to $VER [skip ci]"
+            git push
+            echo "Committed version bump for $VER to master."
+          fi
 
   aur:
-    needs: [build-arch]
+    needs: [release]
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     env:
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
     steps:
       - name: Derive version from tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "VER=${{ inputs.version }}" >> "$GITHUB_ENV"
+            if ! printf '%s' "$INPUT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version '$INPUT_VERSION' must be X.Y.Z (digits only)"
+              exit 1
+            fi
+            echo "VER=$INPUT_VERSION" >> "$GITHUB_ENV"
           else
             echo "VER=${GITHUB_REF_NAME#egis0575-v}" >> "$GITHUB_ENV"
           fi

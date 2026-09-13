@@ -32,8 +32,8 @@ matcher port, for the EgisTec EH575 (1c7a:0575) fingerprint sensor.
 Replaces the distribution libfprint for devices that need this driver.
 
 %prep
-# single-repo layout: the tag tarball extracts to fprintdriver-<tag>/ with
-# the libfprint meson tree in a subdirectory
+# single-repo layout: the tag tarball extracts to libfprint-egis0575-<tag>/
+# with the libfprint meson tree in a subdirectory
 %setup -q -n libfprint-egis0575-egis0575-v%{drvver}
 
 %build
@@ -71,5 +71,9 @@ udevadm hwdb --update || :
 %{_datadir}/metainfo/org.freedesktop.libfprint.metainfo.xml
 
 %changelog
+* Sun Sep 13 2026 cosct <cosct@outlook.com> - 0.2.1-1
+- v0.2.1: enrollment same-spot rejection (threshold 650), host-side
+  calibration cache surviving close, two-tier idle polling.
+
 * Sun Sep 13 2026 cosct <cosct@outlook.com> - 0.2.0-1
 - Initial packaging of the egis0575 experimental driver (libfprint 1.94.100 + EH575).

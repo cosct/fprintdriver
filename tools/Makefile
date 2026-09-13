@@ -1,4 +1,5 @@
-# 研究仓库评测小工具。依赖 ./libfprint/ 克隆（见 README 构建步骤）：
+# 研究仓库评测小工具。依赖仓库内 libfprint/ 子树（相对本目录为
+# ../libfprint/，见 README 构建步骤）：
 #   make                # egis0575-matcher-test（C matcher 交叉验证）
 #   make eval_bz3       # 离线 Bozorth3 评测（先构建 libfprint 得到 NBIS 静态库：
 #                       #   meson setup ../libfprint/builddir ../libfprint && \
