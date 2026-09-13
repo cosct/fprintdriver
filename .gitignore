@@ -1,6 +1,6 @@
-# 大体积本地内容（不随研究仓库发布）
-# 驱动本体在独立仓库：https://github.com/cosct/libfprint-egis0575
-libfprint/
+# 大体积本地内容（不随仓库发布）
+# 驱动源码已在树内（libfprint/，subtree 保留上游历史），只忽略构建目录
+libfprint/builddir*/
 refs/
 acerdrv/
 
