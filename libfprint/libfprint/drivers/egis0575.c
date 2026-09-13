@@ -37,8 +37,12 @@
 
 #define FP_COMPONENT "egis0575"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <stdio.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <glib/gstdio.h>
 #include <nbis.h>
 
@@ -69,6 +73,7 @@ struct _FpDeviceEgis0575
   FpDevice      parent;
 
   gboolean      running;
+  gint64        action_start_wait_since; /* bounded start wait for the previous loop's SM_DONE drain */
   gboolean      stop;
   gboolean      finger_reported;
   gboolean      capture_armed;
@@ -604,6 +609,66 @@ debug_dump_max_files (void)
   return (v > 0 && v <= G_MAXUINT) ? (guint) v : EGIS0575_DEBUG_DUMP_MAX_FILES_DEFAULT;
 }
 
+/* Biometric sinks (frame dumps, verify images, metrics logs) must never be
+ * briefly group/world-readable: g_file_set_contents() creates with
+ * 0666 & ~umask (typically 0644) and only a later chmod tightens it. Create
+ * with an owner-only mode up front and pin it with fchmod() while the file
+ * is still empty, so the permissive window never holds fingerprint data. */
+static gboolean
+write_file_0600 (const gchar *path,
+                 gconstpointer data,
+                 gsize         len,
+                 GError      **error)
+{
+  const guchar *buf = data;
+  int fd = g_open (path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  gsize off = 0;
+
+  if (fd < 0)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Failed to create %s: %s", path, g_strerror (errno));
+      return FALSE;
+    }
+
+  fchmod (fd, 0600);
+
+  while (off < len)
+    {
+      ssize_t n = write (fd, buf + off, len - off);
+
+      if (n < 0)
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                       "Failed to write %s: %s", path, g_strerror (errno));
+          close (fd);
+          return FALSE;
+        }
+      off += n;
+    }
+
+  close (fd);
+  return TRUE;
+}
+
+/* fopen("a") analogue for the metrics log: the append stream is created
+ * owner-only from the very first line. */
+static FILE *
+append_file_0600 (const gchar *path)
+{
+  int fd = g_open (path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+  FILE *f;
+
+  if (fd < 0)
+    return NULL;
+
+  fchmod (fd, 0600);
+  f = fdopen (fd, "a");
+  if (!f)
+    close (fd);
+  return f;
+}
+
 static void
 maybe_write_live_frame_pgm (FpImage *img)
 {
@@ -623,10 +688,8 @@ maybe_write_live_frame_pgm (FpImage *img)
   memcpy (buf, header, header_len);
   memcpy (buf + header_len, img->data, data_len);
 
-  if (!g_file_set_contents (path, buf, (gssize) (header_len + data_len), &error))
+  if (!write_file_0600 (path, buf, header_len + data_len, &error))
     fp_dbg ("live frame write failed: %s", error->message);
-  else
-    g_chmod (path, 0600);   /* raw biometric data: never group/world-readable */
 }
 
 static void
@@ -668,16 +731,12 @@ dump_frame_if_requested (FpDeviceEgis0575 *self,
                           nonzero);
   path = g_build_filename (dump_dir, base, NULL);
 
-  if (!g_file_set_contents (path,
-                            (const gchar *) transfer->buffer,
-                            transfer->actual_length,
-                            &error))
+  if (!write_file_0600 (path, transfer->buffer, transfer->actual_length, &error))
     {
       fp_warn ("Failed to dump EH575 frame to %s: %s", path, error->message);
       return;
     }
 
-  g_chmod (path, 0600);
   fp_dbg ("Dumped EH575 frame to %s", path);
 }
 
@@ -690,7 +749,6 @@ write_image_pgm (FpImage     *img,
   int header_len;
   gsize data_len;
   g_autofree gchar *buf = NULL;
-  gboolean ok;
 
   header_len = g_snprintf (header, sizeof (header), "P5 %u %u 255\n", img->width, img->height);
   data_len = (gsize) img->width * img->height;
@@ -698,11 +756,7 @@ write_image_pgm (FpImage     *img,
   memcpy (buf, header, header_len);
   memcpy (buf + header_len, img->data, data_len);
 
-  ok = g_file_set_contents (path, buf, (gssize) (header_len + data_len), error);
-  if (ok)
-    g_chmod (path, 0600);   /* debug sink: raw fingerprint image */
-
-  return ok;
+  return write_file_0600 (path, buf, header_len + data_len, error);
 }
 
 static gboolean
@@ -1266,13 +1320,12 @@ pgm_debug_maybe_capture (FpDeviceEgis0575 *self,
     return;
 
   need_header = !g_file_test (log_path, G_FILE_TEST_EXISTS);
-  logf = fopen (log_path, "a");
+  logf = append_file_0600 (log_path);   /* per-frame biometric metrics */
   if (!logf)
     {
       fp_warn ("PGM debug: failed to open metrics log %s", log_path);
       return;
     }
-  g_chmod (log_path, 0600);   /* per-frame biometric metrics */
 
   if (need_header)
     fprintf (logf, "seq,pgm,t_ms,raw_nonzero,raw_finger_pixels,presence,coverage_pct,intensity,grain_pct_x1000,grain_pct,ridge_pixels,minutiae,stretch_p5,stretch_p99,pixel_min,pixel_max,pixel_mean,quality_ok\n");
@@ -1486,8 +1539,12 @@ on_frame_accepted_enroll (FpDevice *dev,
                    "reject %u/%u); asking for a new position",
                    best_sim, self->enroll_sim_threshold,
                    self->enroll_sim_rejects, EGIS0575_ENROLL_SIM_MAX_REJECTS);
+          /* No FP_DEVICE_RETRY_* code means "move to a different spot";
+           * GENERAL ("poor scan quality / general scanning problem") is the
+           * honest fit — CENTER_FINGER would tell the user to center a
+           * finger that is already well placed. */
           fpi_device_enroll_progress (dev, self->enroll_stage, enroll_print,
-                                      fpi_device_retry_new (FP_DEVICE_RETRY_CENTER_FINGER));
+                                      fpi_device_retry_new (FP_DEVICE_RETRY_GENERAL));
 
           self->capture_armed = FALSE;
           self->turn_open = FALSE;
@@ -1646,8 +1703,13 @@ save_img (FpiUsbTransfer *transfer, FpDevice *dev)
       if (has_valid_data && frame_pixel_std (transfer) < EGIS0575_BG_UPDATE_MAX_STD)
         update_warm_background (self, transfer);
 
-      /* Lift during a verify turn ends collection: match what we have. */
-      if (self->verify_probes && self->verify_probes->len > 0)
+      /* Lift during a verify turn ends collection: match what we have.
+       * The action guard is load-bearing: residual probes from a cancelled
+       * verify can still be present here, and finalize_verify on an enroll
+       * or capture trips the current-action asserts without ever completing
+       * that action (verify-complete hangs the enroll). */
+      if (fpi_device_get_current_action (dev) == FPI_DEVICE_ACTION_VERIFY &&
+          self->verify_probes && self->verify_probes->len > 0)
         {
           fp_dbg ("Lift detected with %u verify probes; finalizing",
                   self->verify_probes->len);
@@ -1728,7 +1790,11 @@ save_img (FpiUsbTransfer *transfer, FpDevice *dev)
      * with collected probes finalizes instead of discarding them. */
     if (elapsed > EGIS0575_TURN_TIMEOUT_MS * 1000)
       {
-        if (self->verify_probes && self->verify_probes->len > 0)
+        /* Same action guard as the lift path: only a live VERIFY action
+         * may consume collected probes; enroll/capture fall through to
+         * the plain timeout handling below. */
+        if (fpi_device_get_current_action (dev) == FPI_DEVICE_ACTION_VERIFY &&
+            self->verify_probes && self->verify_probes->len > 0)
           {
             fp_dbg ("Turn timed out with %u verify probes; finalizing",
                     self->verify_probes->len);
@@ -2239,6 +2305,11 @@ shutdown_packet_ssm_run_state (FpiSsm *ssm, FpDevice *dev)
     }
 }
 
+/* Calibration-chain submit helpers. Known trade-off: unlike the capture
+ * loop's req/resp callbacks (which route USB timeouts through
+ * timeout_recover_or_fail), any error here — including a transient timeout —
+ * fails the whole action. Accepted because the calibration chain runs once
+ * at action start; the recovery is simply the user re-running the action. */
 static void
 cal_send (FpiSsm                *ssm,
           FpDevice              *dev,
@@ -2341,6 +2412,12 @@ ssm_run_state (FpiSsm *ssm, FpDevice *dev)
       if (self->cal_skip)
         {
           fp_dbg ("Calibration skipped (EGIS0575_SKIP_CALIBRATION=1)");
+          /* Anchor the idle-reinit watchdog at open time: last_full_init_time
+           * is otherwise only written by the full-calibration path
+           * (SM_CAL_ACK), so in skip mode it stays 0 and the first valid
+           * empty frame after >10 min of host uptime would fire one spurious
+           * preventive re-init. */
+          self->last_full_init_time = g_get_monotonic_time ();
           self->has_pre_init_run = FALSE;
           fpi_ssm_jump_to_state (ssm, SM_INIT);
         }
@@ -2667,6 +2744,14 @@ reset_action_state (FpDeviceEgis0575 *self)
   self->weak_press_window_start = 0;
   self->background_warmup_remaining = EGIS0575_BACKGROUND_WARMUP_FRAMES;
   clear_background (self);
+
+  /* Cancel does not touch verify_probes (only dev_verify rebuilds the array
+   * and finalize_verify drains it), so a cancelled verify leaves collected
+   * probes behind; the next action in the same claim session must not see
+   * them or its no-finger/turn-timeout paths would finalize a VERIFY on an
+   * enroll/capture action. */
+  if (self->verify_probes)
+    g_ptr_array_set_size (self->verify_probes, 0);
 }
 
 static void start_capture_action_cb (FpDevice *dev, gpointer user_data);
@@ -2682,10 +2767,29 @@ start_capture_action (FpDevice *dev)
       /* The previous action's capture loop is still running its SM_DONE
        * shutdown chain (actions complete while it drains). Two live loops
        * would share cal_pkt_array/transfer_in_flight/capture_ssm and
-       * corrupt each other, so wait for the old loop to wind down. */
+       * corrupt each other, so wait for the old loop to wind down — but
+       * only up to EGIS0575_ACTION_START_WAIT_MAX_MS; a loop that never
+       * drains must surface as an error, not an unbounded wait. */
+      if (self->action_start_wait_since == 0)
+        self->action_start_wait_since = g_get_monotonic_time ();
+
+      if (g_get_monotonic_time () - self->action_start_wait_since >
+          (gint64) EGIS0575_ACTION_START_WAIT_MAX_MS * 1000)
+        {
+          fp_warn ("Previous capture loop still draining after %d ms; failing action",
+                   EGIS0575_ACTION_START_WAIT_MAX_MS);
+          self->action_start_wait_since = 0;
+          fpi_device_action_error (dev,
+                                   fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
+                                                             "previous capture loop did not wind down"));
+          return;
+        }
+
       fpi_device_add_timeout (dev, 50, start_capture_action_cb, NULL, NULL);
       return;
     }
+
+  self->action_start_wait_since = 0;
 
   ssm = fpi_ssm_new_full (dev, ssm_run_state, SM_STATES_NUM, SM_STATES_NUM,
                           "egis0575-capture");
@@ -2699,15 +2803,20 @@ start_capture_action (FpDevice *dev)
 static void
 start_capture_action_cb (FpDevice *dev, gpointer user_data)
 {
+  FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (dev);
   FpiDeviceAction action = fpi_device_get_current_action (dev);
 
   /* The action that asked for this start may have completed (cancelled)
    * while the old loop was still draining; never start a capture loop
-   * without a live action to drive it. */
+   * without a live action to drive it. Drop the wait anchor too, so the
+   * next action's bounded wait starts from its own request time. */
   if (action != FPI_DEVICE_ACTION_ENROLL &&
       action != FPI_DEVICE_ACTION_VERIFY &&
       action != FPI_DEVICE_ACTION_CAPTURE)
-    return;
+    {
+      self->action_start_wait_since = 0;
+      return;
+    }
 
   start_capture_action (dev);
 }
@@ -2947,6 +3056,21 @@ dev_verify (FpDevice *dev)
       fpi_device_verify_complete (dev,
                                   fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
                                                             "enrolled print has no usable EH575 template (outdated or invalid format); delete it and re-enroll"));
+      return;
+    }
+
+  /* The match verdict needs at least EGIS0575_M_AGREE_FRAMES gallery frames
+   * scoring above AGREE_SCORE; fewer can never match (enroll always pools
+   * EGIS0575_ENROLL_FRAMES frames, so this only catches hand-crafted
+   * fpi-data blobs). Fail fast instead of failing every verify silently. */
+  if (self->verify_gallery_n < EGIS0575_M_AGREE_FRAMES)
+    {
+      fp_warn ("Verify print has only %u gallery frame(s); minimum is %d; re-enroll",
+               self->verify_gallery_n, EGIS0575_M_AGREE_FRAMES);
+      g_clear_pointer (&self->verify_probes, g_ptr_array_unref);
+      fpi_device_verify_complete (dev,
+                                  fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                                            "enrolled print has too few EH575 frames to ever match; delete it and re-enroll"));
       return;
     }
 

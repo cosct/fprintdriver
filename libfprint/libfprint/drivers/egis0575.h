@@ -312,6 +312,14 @@ static const Packet EGIS0575_POST_CALIBRATION_PACKETS[] = {
 /* The cancel watchdog re-checks the capture loop at this interval. */
 #define EGIS0575_CANCEL_WATCHDOG_MS 1000
 
+/* Upper bound on how long a newly requested action waits for the previous
+ * action's SM_DONE shutdown chain to drain before failing with BUSY. That
+ * chain is 9 packets × 2 transfers at EGIS0575_TIMEOUT each (~36 s worst
+ * case on a wedged sensor, see the deferred-close note below), so 40 s
+ * covers it with margin; anything longer means the loop is stuck and the
+ * action must fail instead of polling forever. */
+#define EGIS0575_ACTION_START_WAIT_MAX_MS 40000
+
 /* Deferred close: poll interval and retry cap while waiting for the capture
  * loop to wind down before the interface is released. The shutdown chain is
  * 9 packets × 2 transfers, each with a hard EGIS0575_TIMEOUT on a wedged
